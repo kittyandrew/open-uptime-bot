@@ -1,0 +1,23 @@
+services:
+  db:
+    container_name: open-uptime-bot-db
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+  oubot:
+    container_name: open-uptime-bot
+    image: open-uptime-bot:0.1.0
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - default
+      - caddy
+
+networks:
+  caddy:
+    name: caddynet
+    external: true
