@@ -55,12 +55,12 @@
 
         packages.docker = pkgs.dockerTools.buildImage {
           name = "open-uptime-bot";
-          tag = "0.1.0";
+          tag = "0.1.1";
           fromImage = pkgs.dockerTools.pullImage {
             imageName = "alpine";
-            imageDigest = "sha256:1e42bbe2508154c9126d48c2b8a75420c3544343bf86fd041fb7527e017a4b4a";
-            sha256 = "sha256-48+FR2foSo13zaPHDN3dB1qutzqq5WKRPFBo9HQM2Qk=";
-            finalImageTag = "3.20.3";
+            imageDigest = "sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62";
+            sha256 = "sha256-QUXyvHkl7SC+knv55QXHS9UkLx49JI5DfORpwukvvPE=";
+            finalImageTag = "3.23.3";
           };
           copyToRoot = pkgs.buildEnv {
             name = "image-root"; # @TODO: What is this name actually for?
@@ -115,13 +115,13 @@
           custom-pico-sdk = with pkgs;
             pico-sdk.overrideAttrs (oldAttrs: rec {
               pname = "pico-sdk";
-              version = "2.0.0";
+              version = "2.2.0";
               src = fetchFromGitHub {
                 fetchSubmodules = true;
                 owner = "raspberrypi";
                 repo = pname;
                 rev = version;
-                sha256 = "sha256-fVSpBVmjeP5pwkSPhhSCfBaEr/FEtA82mQOe/cHFh0A=";
+                sha256 = "sha256-8ubZW6yQnUTYxQqYI6hi7s3kFVQhe5EaxVvHmo93vgk=";
               };
             });
         in

@@ -1,8 +1,6 @@
-cargo-features = ["edition2024"]
-
 [package]
 name = "open-uptime-bot"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 # I have no clue what any of this does:

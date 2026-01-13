@@ -45,3 +45,10 @@ Note that by default this tier is already added into `.env`, so it will work alr
 NTFY_USER_TIER=open-uptime-bot-basic
 ```
 
+# Deployment with docker
+  
+```bash
+nix develop # to initiate the dev shell
+nix build .#docker # creates 'result' artifact in the current dir
+docker load < result # load docker image into local docker registry
+```
