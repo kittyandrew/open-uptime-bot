@@ -155,39 +155,56 @@ pub struct UptimeState {
     pub touched_at: SystemTime,
     pub status: UpStatus,
     pub user_id: Option<ID>,
+    pub state_changed_at: SystemTime,
 }
 
 impl UptimeState {
     pub fn new(user_id: ID) -> UptimeState {
+        let now = SystemTime::now();
         UptimeState {
             id: Uuid::new_v4(),
-            created_at: SystemTime::now(),
-            touched_at: SystemTime::now(),
+            created_at: now,
+            touched_at: now,
             status: UpStatus::Uninitialized,
             user_id: Some(user_id),
+            state_changed_at: now,
         }
     }
 
-    pub fn touch(&mut self) -> bool {
-        self.touched_at = SystemTime::now();
+    /// Called when device pings. Returns Some(duration) if state changed from Down to Up,
+    /// where duration is the time power was off.
+    pub fn touch(&mut self) -> Option<std::time::Duration> {
+        let now = SystemTime::now();
+        self.touched_at = now;
+
         if self.status == UpStatus::Uninitialized {
             self.status = UpStatus::Up;
-            return false;
+            self.state_changed_at = now;
+            return None;
         }
 
         if self.status == UpStatus::Down {
+            // Calculate how long power was off (since last state change to Down)
+            let duration = now.duration_since(self.state_changed_at).ok();
             self.status = UpStatus::Up;
-            return true;
+            self.state_changed_at = now;
+            return duration;
         }
-        return false;
+        return None;
     }
 
-    pub fn go_down(&mut self) -> bool {
+    /// Called when timeout expires. Returns Some(duration) if state changed from Up to Down,
+    /// where duration is the time power was on.
+    pub fn go_down(&mut self) -> Option<std::time::Duration> {
         if self.status == UpStatus::Up {
+            let now = SystemTime::now();
+            // Calculate how long power was on (since last state change to Up)
+            let duration = now.duration_since(self.state_changed_at).ok();
             self.status = UpStatus::Down;
-            return true;
+            self.state_changed_at = now;
+            return duration;
         }
-        return false;
+        return None;
     }
 }
 

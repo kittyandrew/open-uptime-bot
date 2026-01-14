@@ -36,12 +36,49 @@ static_loader! {
     };
 }
 
+/// Formats a duration in Ukrainian with days, hours, and minutes.
+/// Examples: "35 хв", "1 день 12 год 22 хв", "23 год 8 хв", "238 днів 15 год 13 хв"
+fn format_duration_uk(duration: Duration) -> String {
+    let total_secs = duration.as_secs();
+    let days = total_secs / 86400;
+    let hours = (total_secs % 86400) / 3600;
+    let minutes = (total_secs % 3600) / 60;
+
+    let mut parts = Vec::new();
+
+    if days > 0 {
+        let day_word = match days % 10 {
+            1 if days % 100 != 11 => "день",
+            2..=4 if !(12..=14).contains(&(days % 100)) => "дні",
+            _ => "днів",
+        };
+        parts.push(format!("{days} {day_word}"));
+    }
+
+    if hours > 0 {
+        parts.push(format!("{hours} год"));
+    }
+
+    if minutes > 0 || parts.is_empty() {
+        parts.push(format!("{minutes} хв"));
+    }
+
+    parts.join(" ")
+}
+
 #[derive(Database)]
 #[database("open-uptime-bot")]
 pub struct DB(PgPool);
 
 // @nocheckin: strings here should be from locales.
-async fn dispatch_notifications(item: db::UserState, context: context::Context) {
+async fn dispatch_notifications(item: db::UserState, context: context::Context, duration: Option<Duration>) {
+    // Format the duration message based on status
+    let duration_message = match (item.uptime.status, duration) {
+        (db::UpStatus::Up, Some(d)) => format!("Світла не було {}", format_duration_uk(d)),
+        (db::UpStatus::Down, Some(d)) => format!("Світло було {}", format_duration_uk(d)),
+        _ => String::new(),
+    };
+
     if item.ntfy.enabled {
         let notification = ntfy::NtfyNotification {
             topic: item.ntfy.topic.clone(),
@@ -52,7 +89,7 @@ async fn dispatch_notifications(item: db::UserState, context: context::Context) 
                 db::UpStatus::Down => "Відключення світла!".to_string(),
                 db::UpStatus::Maintainance => "Service is going on maintance!".to_string(),
             },
-            message: "(тут буде цікава інформація про графік/тривалість відключень)".to_string(),
+            message: duration_message.clone(),
             status: match item.uptime.status {
                 db::UpStatus::Uninitialized => "white_check_mark".to_string(),
                 db::UpStatus::Up => "white_check_mark".to_string(),
@@ -73,10 +110,10 @@ async fn dispatch_notifications(item: db::UserState, context: context::Context) 
     if let Some(tg) = context.tg {
         if item.tg.enabled {
             let message = match item.uptime.status {
-                db::UpStatus::Uninitialized => "Девайс під'єднано!",
-                db::UpStatus::Up => "Світло з'явилося!",
-                db::UpStatus::Down => "Відключення світла!",
-                db::UpStatus::Maintainance => "Service is going on maintance!",
+                db::UpStatus::Uninitialized => "Девайс під'єднано!".to_string(),
+                db::UpStatus::Up => format!("Світло з'явилося!\n{}", duration_message),
+                db::UpStatus::Down => format!("Відключення світла!\n{}", duration_message),
+                db::UpStatus::Maintainance => "Service is going on maintance!".to_string(),
             };
 
             tokio::spawn(async move {
@@ -110,11 +147,11 @@ async fn background_handle_down(context: context::Context) {
             let mut guard = context.users.write().await;
             for user_id in user_ids {
                 let item = guard.get_mut(&user_id).unwrap();
-                if item.uptime.go_down() {
+                if let Some(duration) = item.uptime.go_down() {
                     // We get into the 'else' statement if the returned time is negative,
                     // which in other words means that we are past the threshold time and
                     // notifications need to be fired off.
-                    tokio::spawn(dispatch_notifications(item.clone(), context.clone()));
+                    tokio::spawn(dispatch_notifications(item.clone(), context.clone(), Some(duration)));
                 }
             }
         }
@@ -159,11 +196,10 @@ async fn api_up(bauth: bauth::BAuth, context: &State<context::Context>) -> Statu
     let mut guard = context.users.write().await;
     let item = guard.get_mut(&bauth.uid).expect("RIP");
     // This will automatically update ('touch') the 'query_at' value and push
-    // it back by the defined threshold. Additionally, it returns bool indicating
-    // whether state was changed from something to "up", so we will fire off
-    // notifications if it returns true.
-    if item.uptime.touch() {
-        tokio::spawn(dispatch_notifications(item.clone(), context.inner().clone()));
+    // it back by the defined threshold. Additionally, it returns Some(duration)
+    // if state was changed from Down to Up, so we will fire off notifications.
+    if let Some(duration) = item.uptime.touch() {
+        tokio::spawn(dispatch_notifications(item.clone(), context.inner().clone(), Some(duration)));
     };
     return Status::Ok;
 }
@@ -235,4 +271,72 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_duration_uk_minutes_only() {
+        assert_eq!(format_duration_uk(Duration::from_secs(0)), "0 хв");
+        assert_eq!(format_duration_uk(Duration::from_secs(60)), "1 хв");
+        assert_eq!(format_duration_uk(Duration::from_secs(35 * 60)), "35 хв");
+        assert_eq!(format_duration_uk(Duration::from_secs(59 * 60)), "59 хв");
+    }
+
+    #[test]
+    fn test_format_duration_uk_hours_and_minutes() {
+        assert_eq!(format_duration_uk(Duration::from_secs(3600)), "1 год");
+        assert_eq!(format_duration_uk(Duration::from_secs(3600 + 8 * 60)), "1 год 8 хв");
+        assert_eq!(format_duration_uk(Duration::from_secs(23 * 3600 + 8 * 60)), "23 год 8 хв");
+    }
+
+    #[test]
+    fn test_format_duration_uk_days_singular() {
+        // 1 день (singular)
+        assert_eq!(format_duration_uk(Duration::from_secs(86400)), "1 день");
+        assert_eq!(
+            format_duration_uk(Duration::from_secs(86400 + 12 * 3600 + 22 * 60)),
+            "1 день 12 год 22 хв"
+        );
+        // 21 день, 31 день, etc. (ends in 1, but not 11)
+        assert_eq!(format_duration_uk(Duration::from_secs(21 * 86400)), "21 день");
+        assert_eq!(format_duration_uk(Duration::from_secs(31 * 86400)), "31 день");
+        assert_eq!(format_duration_uk(Duration::from_secs(101 * 86400)), "101 день");
+    }
+
+    #[test]
+    fn test_format_duration_uk_days_few() {
+        // 2-4 дні (few, but not 12-14)
+        assert_eq!(format_duration_uk(Duration::from_secs(2 * 86400)), "2 дні");
+        assert_eq!(format_duration_uk(Duration::from_secs(3 * 86400)), "3 дні");
+        assert_eq!(format_duration_uk(Duration::from_secs(4 * 86400)), "4 дні");
+        assert_eq!(format_duration_uk(Duration::from_secs(22 * 86400)), "22 дні");
+        assert_eq!(format_duration_uk(Duration::from_secs(24 * 86400)), "24 дні");
+        assert_eq!(format_duration_uk(Duration::from_secs(102 * 86400)), "102 дні");
+    }
+
+    #[test]
+    fn test_format_duration_uk_days_many() {
+        // 0, 5-20, 11-14 днів (many)
+        assert_eq!(format_duration_uk(Duration::from_secs(5 * 86400)), "5 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(10 * 86400)), "10 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(11 * 86400)), "11 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(12 * 86400)), "12 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(13 * 86400)), "13 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(14 * 86400)), "14 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(15 * 86400)), "15 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(20 * 86400)), "20 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(100 * 86400)), "100 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(111 * 86400)), "111 днів");
+        assert_eq!(format_duration_uk(Duration::from_secs(112 * 86400)), "112 днів");
+    }
+
+    #[test]
+    fn test_format_duration_uk_full_example() {
+        // Example from spec: "238 днів 15 год 13 хв"
+        let duration = Duration::from_secs(238 * 86400 + 15 * 3600 + 13 * 60);
+        assert_eq!(format_duration_uk(duration), "238 днів 15 год 13 хв");
+    }
 }

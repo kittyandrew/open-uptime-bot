@@ -61,6 +61,7 @@ diesel::table! {
         touched_at -> Timestamp,
         status -> StatusEnum,
         user_id -> Nullable<Uuid>,
+        state_changed_at -> Timestamp,
     }
 }
 
