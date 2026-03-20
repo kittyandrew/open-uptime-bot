@@ -94,10 +94,10 @@ impl NtfyClient {
         config.capitalize_words = Probability::Never;
         let passgen = config.to_scheme();
 
-        let rng = rand::thread_rng();
+        let mut rng = rand::thread_rng();
         // Random unique identifiers for user and topic.
-        let topic_suffix: String = rng.clone().sample_iter(&Alphanumeric).take(8).map(char::from).collect();
-        let user_suffix: String = rng.clone().sample_iter(&Alphanumeric).take(8).map(char::from).collect();
+        let topic_suffix: String = (&mut rng).sample_iter(&Alphanumeric).take(8).map(char::from).collect();
+        let user_suffix: String = (&mut rng).sample_iter(&Alphanumeric).take(8).map(char::from).collect();
         return NtfyUser {
             id: Uuid::new_v4(),
             enabled,
@@ -128,14 +128,28 @@ impl NtfyClient {
             .post(format!("{base}/v1/users/access", base = self.base_url))
             .json(&user)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
 
         if access_response.status() != 200 {
             return Err(Box::new(NtfyCustomError::new(access_response.json::<Value>().await?)));
         }
 
         return Ok(user);
+    }
+
+    pub async fn delete_user(&self, username: &str) -> Result<()> {
+        let response = self
+            .client
+            .delete(format!("{base}/v1/users", base = self.base_url))
+            .json(&rocket::serde::json::json!({"username": username}))
+            .send()
+            .await?;
+
+        if response.status() != 200 {
+            return Err(Box::new(NtfyCustomError::new(response.json::<Value>().await?)));
+        }
+
+        return Ok(());
     }
 
     pub async fn send_notification(&self, data: NtfyNotification) -> Result<()> {

@@ -1,4 +1,4 @@
-use crate::schema::{invites, ntfy_users, tg_users, uptime_states, users};
+use crate::schema::{invites, ntfy_users, uptime_states, users};
 use rand::{Rng, distributions::Alphanumeric};
 use rocket::serde::{Deserialize, Serialize};
 use rocket_db_pools::diesel::AsyncPgConnection;
@@ -31,7 +31,6 @@ impl From<diesel::result::Error> for CustomError {
 #[serde(crate = "rocket::serde")]
 pub struct NtfyUser {
     pub id: ID,
-    #[serde(skip_serializing)]
     pub enabled: bool,
     pub topic: String,
     #[serde(rename(serialize = "permission"))]
@@ -39,40 +38,6 @@ pub struct NtfyUser {
     pub username: String,
     pub password: String,
     pub tier: String,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, diesel_derive_enum::DbEnum)]
-#[ExistingTypePath = "crate::schema::sql_types::ChatStateEnum"]
-#[serde(crate = "rocket::serde")]
-pub enum ChatState {
-    Main,
-    Invites,
-}
-
-#[derive(Debug, Clone, Serialize, Queryable, Selectable, Insertable)]
-#[diesel(table_name = tg_users)]
-#[serde(crate = "rocket::serde")]
-pub struct TelegramUser {
-    pub id: ID,
-    pub enabled: bool,
-    pub user_id: i64,
-    pub chat_id: Option<i64>, // Telegram chat or channel id for posting status.
-    pub chat_state: ChatState,
-    // @TODO: We should check on every message and update in db if changed.
-    pub language_code: String,
-}
-
-impl TelegramUser {
-    pub fn new(enabled: bool, user_id: i64, language_code: String) -> TelegramUser {
-        return TelegramUser {
-            id: Uuid::new_v4(),
-            enabled,
-            user_id,
-            chat_id: None,
-            chat_state: ChatState::Main,
-            language_code,
-        };
-    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Deserialize, Serialize, diesel_derive_enum::DbEnum)]
@@ -94,9 +59,8 @@ pub struct User {
     pub invites_used: i64,
     pub access_token: String,
     pub up_delay: i16,
-    pub down_delay: i16, // @nocheckin: actually implement? feels implemented
     pub ntfy_id: ID,
-    pub tg_id: ID,
+    pub language_code: String,
 }
 
 impl User {
@@ -104,9 +68,8 @@ impl User {
         user_type: UserType,
         invites_limit: i64,
         up_delay: Option<u16>,
-        down_delay: Option<u16>,
+        language_code: String,
         ntfy: &NtfyUser,
-        tg: &TelegramUser,
     ) -> User {
         let rng = rand::thread_rng();
         let secret_part: String = rng.sample_iter(&Alphanumeric).take(32).map(char::from).collect();
@@ -117,11 +80,9 @@ impl User {
             invites_limit,
             invites_used: 0,
             access_token: format!("tk_{secret_part}"),
-            // @nocheckin: assert this value has to be above 10 seconds.
             up_delay: up_delay.unwrap_or(30) as i16,
-            down_delay: down_delay.unwrap_or(0) as i16,
             ntfy_id: ntfy.id,
-            tg_id: tg.id,
+            language_code,
         }
     }
 }
@@ -144,7 +105,7 @@ pub enum UpStatus {
     Uninitialized,
     Up,
     Down,
-    Maintainance,
+    Paused,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable, Insertable)]
@@ -156,6 +117,16 @@ pub struct UptimeState {
     pub status: UpStatus,
     pub user_id: Option<ID>,
     pub state_changed_at: SystemTime,
+}
+
+/// Result of a touch() call indicating what state transition occurred.
+pub enum TouchResult {
+    /// No state change (device was already Up or Paused)
+    NoChange,
+    /// Device connected for the first time (Uninitialized → Up)
+    Connected,
+    /// Device reconnected after being down (Down → Up), with time spent down
+    Restored(std::time::Duration),
 }
 
 impl UptimeState {
@@ -171,26 +142,25 @@ impl UptimeState {
         }
     }
 
-    /// Called when device pings. Returns Some(duration) if state changed from Down to Up,
-    /// where duration is the time power was off.
-    pub fn touch(&mut self) -> Option<std::time::Duration> {
+    /// Called when device pings. Returns the state transition that occurred.
+    pub fn touch(&mut self) -> TouchResult {
         let now = SystemTime::now();
         self.touched_at = now;
 
         if self.status == UpStatus::Uninitialized {
             self.status = UpStatus::Up;
             self.state_changed_at = now;
-            return None;
+            return TouchResult::Connected;
         }
 
         if self.status == UpStatus::Down {
             // Calculate how long power was off (since last state change to Down)
-            let duration = now.duration_since(self.state_changed_at).ok();
+            let duration = now.duration_since(self.state_changed_at).unwrap_or_default();
             self.status = UpStatus::Up;
             self.state_changed_at = now;
-            return duration;
+            return TouchResult::Restored(duration);
         }
-        return None;
+        TouchResult::NoChange
     }
 
     /// Called when timeout expires. Returns Some(duration) if state changed from Up to Down,
@@ -213,7 +183,6 @@ impl UptimeState {
 pub struct UserState {
     pub user: User,
     pub ntfy: NtfyUser,
-    pub tg: TelegramUser,
     #[serde(skip_serializing)]
     pub uptime: UptimeState,
 }
@@ -223,23 +192,12 @@ pub async fn create_new_state(
     user_state: &UserState,
     token_id: Option<&Uuid>,
 ) -> Result<(), String> {
-    // @TODO: We do a bunch of create operations that need to be a single
-    //  transaction to have automatic roll back in case any of them fails.
     let result = conn
         .transaction::<_, CustomError, _>(|tconn| {
             async move {
-                // @nocheckin: If token provided, verify it and throw if missing or already taken.
-                // @nocheckin: Instead of provided invites_limit 5, take it from the previous user.
-                // @nocheckin: Update invite body to specify if invite is for admins (make sure
-                //         normal user cannot make an invite of the level above them, future proof).
                 diesel::insert_into(ntfy_users::dsl::ntfy_users)
                     .values(&user_state.ntfy)
                     .returning(ntfy_users::dsl::id)
-                    .get_result::<ID>(tconn)
-                    .await?;
-                diesel::insert_into(tg_users::dsl::tg_users)
-                    .values(&user_state.tg)
-                    .returning(tg_users::dsl::id)
                     .get_result::<ID>(tconn)
                     .await?;
                 diesel::insert_into(users::dsl::users)
@@ -252,36 +210,48 @@ pub async fn create_new_state(
                     .returning(uptime_states::dsl::id)
                     .get_result::<ID>(tconn)
                     .await?;
+
+                // Consume the invite (after user insert, since user_id has FK to users)
+                if let Some(invite_id) = token_id {
+                    let updated = diesel::update(invites::dsl::invites)
+                        .filter(invites::dsl::id.eq(invite_id))
+                        .filter(invites::dsl::is_used.eq(false))
+                        .set((
+                            invites::dsl::is_used.eq(true),
+                            invites::dsl::user_id.eq(user_state.user.id),
+                        ))
+                        .execute(tconn)
+                        .await?;
+                    if updated == 0 {
+                        return Err(CustomError::CreationFailed);
+                    }
+                }
+
                 Ok(())
             }
             .scope_boxed()
         })
         .await;
 
-    // @nocheckin: this is so ugly
-    match result {
-        Ok(_) => Ok(()),
-        Err(err) => Err(format!("{err:?}")),
-    }
+    result.map_err(|err| format!("{err:?}"))
 }
 
 pub async fn get_all_states(conn: &mut AsyncPgConnection) -> R<Vec<UserState>> {
-    let user_items: Vec<(User, NtfyUser, TelegramUser)> = users::dsl::users
+    let user_items: Vec<(User, NtfyUser)> = users::dsl::users
         .inner_join(ntfy_users::dsl::ntfy_users)
-        .inner_join(tg_users::dsl::tg_users)
-        .select((User::as_select(), NtfyUser::as_select(), TelegramUser::as_select()))
-        .load::<(User, NtfyUser, TelegramUser)>(conn)
+        .select((User::as_select(), NtfyUser::as_select()))
+        .load::<(User, NtfyUser)>(conn)
         .await?;
 
     let mut all_states = Vec::new();
-    for (user, ntfy, tg) in user_items {
+    for (user, ntfy) in user_items {
         let uptime = uptime_states::dsl::uptime_states
             .filter(uptime_states::dsl::user_id.eq(user.id))
             .order(uptime_states::dsl::created_at.desc())
             .select(UptimeState::as_select())
             .first::<UptimeState>(conn)
             .await?;
-        all_states.push(UserState { user, ntfy, tg, uptime });
+        all_states.push(UserState { user, ntfy, uptime });
     }
 
     Ok(all_states)
@@ -295,12 +265,11 @@ pub struct Invite {
     pub created_at: SystemTime,
     pub token: String,
     pub is_used: bool,
-    pub owner_id: ID,
+    pub owner_id: Option<ID>,
     pub user_id: Option<ID>,
 }
 
 impl Invite {
-    // @TODO: Move invited user perms level here?
     pub fn new(owner_id: ID) -> Invite {
         let rng = rand::thread_rng();
         Invite {
@@ -308,27 +277,28 @@ impl Invite {
             created_at: SystemTime::now(),
             token: rng.sample_iter(&Alphanumeric).take(24).map(char::from).collect(),
             is_used: false,
-            owner_id,
+            owner_id: Some(owner_id),
             user_id: None,
         }
     }
 }
 
 pub async fn create_new_invite(conn: &mut AsyncPgConnection, invite: &Invite) -> Result<(), String> {
+    let owner_id = invite.owner_id.ok_or_else(|| "Invite must have an owner".to_string())?;
     let result = conn
         .transaction::<_, CustomError, _>(|tconn| {
             async move {
                 // diesel::update(invites::dsl::invites).set(invites::dsl::invites::);
                 let (limit, used) = diesel::update(users::dsl::users)
-                    .filter(users::dsl::id.eq(invite.owner_id))
+                    .filter(users::dsl::id.eq(owner_id))
                     .set(users::dsl::invites_used.eq(users::dsl::invites_used + 1))
                     .returning((users::dsl::invites_limit, users::dsl::invites_used))
                     .get_result::<(i64, i64)>(tconn)
                     .await?;
 
                 // Abort operation if limit was passed.
-                if used >= limit {
-                    warn!("New invite failed: {used}/{limit} for uid {}!", invite.owner_id);
+                if used > limit {
+                    warn!("New invite failed: {used}/{limit} for uid {}!", owner_id);
                     return Err(CustomError::CreationFailed);
                 }
 
@@ -344,9 +314,153 @@ pub async fn create_new_invite(conn: &mut AsyncPgConnection, invite: &Invite) ->
         })
         .await;
 
-    // @nocheckin: this is so ugly
-    match result {
-        Ok(_) => Ok(()),
-        Err(err) => Err(format!("{err:?}")),
-    }
+    result.map_err(|err| format!("{err:?}"))
+}
+
+pub async fn get_invites_for_user(
+    conn: &mut AsyncPgConnection,
+    uid: ID,
+) -> Result<Vec<Invite>, diesel::result::Error> {
+    invites::dsl::invites
+        .filter(invites::dsl::owner_id.eq(uid))
+        .load::<Invite>(conn)
+        .await
+}
+
+pub async fn delete_invite(
+    conn: &mut AsyncPgConnection,
+    invite_id: ID,
+    owner_id: ID,
+) -> Result<usize, diesel::result::Error> {
+    conn.transaction::<_, diesel::result::Error, _>(|tconn| {
+        async move {
+            let invite_used = match invites::dsl::invites
+                .filter(invites::dsl::id.eq(invite_id))
+                .filter(invites::dsl::owner_id.eq(owner_id))
+                .select(invites::dsl::is_used)
+                .first::<bool>(tconn)
+                .await
+            {
+                Ok(used) => used,
+                Err(diesel::result::Error::NotFound) => return Ok(0),
+                Err(e) => return Err(e),
+            };
+
+            let deleted = diesel::delete(
+                invites::dsl::invites
+                    .filter(invites::dsl::id.eq(invite_id))
+                    .filter(invites::dsl::owner_id.eq(owner_id)),
+            )
+            .execute(tconn)
+            .await?;
+
+            // Reclaim invite slot if the deleted invite was unused
+            if deleted > 0 && !invite_used {
+                diesel::update(users::dsl::users.filter(users::dsl::id.eq(owner_id)))
+                    .set(users::dsl::invites_used.eq(users::dsl::invites_used - 1))
+                    .execute(tconn)
+                    .await?;
+            }
+
+            Ok(deleted)
+        }
+        .scope_boxed()
+    })
+    .await
+}
+
+pub async fn delete_user(
+    conn: &mut AsyncPgConnection,
+    user_id: ID,
+) -> Result<usize, diesel::result::Error> {
+    conn.transaction::<_, diesel::result::Error, _>(|tconn| {
+        async move {
+            // Get ntfy_id before deleting user
+            let ntfy_id: ID = users::dsl::users
+                .filter(users::dsl::id.eq(user_id))
+                .select(users::dsl::ntfy_id)
+                .first(tconn)
+                .await?;
+
+            // Delete user (cascades uptime_states and invites via ON DELETE CASCADE)
+            let deleted = diesel::delete(users::dsl::users.filter(users::dsl::id.eq(user_id)))
+                .execute(tconn)
+                .await?;
+
+            // Delete ntfy user (FK points from users -> ntfy, so no cascade)
+            diesel::delete(ntfy_users::dsl::ntfy_users.filter(ntfy_users::dsl::id.eq(ntfy_id)))
+                .execute(tconn)
+                .await?;
+
+            Ok(deleted)
+        }
+        .scope_boxed()
+    })
+    .await
+}
+
+// User settings management
+
+pub async fn regenerate_user_token(
+    conn: &mut AsyncPgConnection,
+    user_id: ID,
+) -> Result<String, diesel::result::Error> {
+    let rng = rand::thread_rng();
+    let secret_part: String = rng.sample_iter(&Alphanumeric).take(32).map(char::from).collect();
+    let new_token = format!("tk_{secret_part}");
+
+    diesel::update(users::dsl::users.filter(users::dsl::id.eq(user_id)))
+        .set(users::dsl::access_token.eq(&new_token))
+        .execute(conn)
+        .await?;
+
+    Ok(new_token)
+}
+
+pub async fn update_ntfy_enabled(
+    conn: &mut AsyncPgConnection,
+    ntfy_id: ID,
+    enabled: bool,
+) -> Result<(), diesel::result::Error> {
+    diesel::update(ntfy_users::dsl::ntfy_users.filter(ntfy_users::dsl::id.eq(ntfy_id)))
+        .set(ntfy_users::dsl::enabled.eq(enabled))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_user_language(
+    conn: &mut AsyncPgConnection,
+    user_id: ID,
+    language_code: &str,
+) -> Result<(), diesel::result::Error> {
+    diesel::update(users::dsl::users.filter(users::dsl::id.eq(user_id)))
+        .set(users::dsl::language_code.eq(language_code))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_uptime_state(
+    conn: &mut AsyncPgConnection,
+    state: &UptimeState,
+) -> Result<(), diesel::result::Error> {
+    diesel::update(uptime_states::dsl::uptime_states.filter(uptime_states::dsl::id.eq(state.id)))
+        .set((
+            uptime_states::dsl::touched_at.eq(state.touched_at),
+            uptime_states::dsl::status.eq(state.status),
+            uptime_states::dsl::state_changed_at.eq(state.state_changed_at),
+        ))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_all_unused_invites(
+    conn: &mut AsyncPgConnection,
+) -> Result<Vec<Invite>, diesel::result::Error> {
+    invites::dsl::invites
+        .filter(invites::dsl::is_used.eq(false))
+        .load::<Invite>(conn)
+        .await
 }

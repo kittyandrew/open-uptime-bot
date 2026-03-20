@@ -20,6 +20,11 @@ class ApiV1UpTestSuccess(TestBase):
         # and activates the timer for the first "downtime" notification.
         await self.ping()
 
+        # First ping (Uninitialized -> Up) fires a "device connected" notification.
+        message = await self.wait_for_message(ws)
+        assert message["event"] == "message"
+        assert message["title"] == "Девайс під'єднано!"
+
         # @TODO: Make notification time configurable, so this test can run much faster.
 
         # Expect a normal downtime notification.

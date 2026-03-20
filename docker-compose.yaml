@@ -7,7 +7,7 @@ services:
       - .env
   oubot:
     container_name: open-uptime-bot
-    image: open-uptime-bot:0.1.1
+    image: open-uptime-bot:2026.3.19
     restart: unless-stopped
     env_file:
       - .env
@@ -15,9 +15,11 @@ services:
       - db
     networks:
       - default
-      - caddy
+    #   - caddy
+    ports:
+      - 8080:8080
 
-networks:
-  caddy:
-    name: caddynet
-    external: true
+# networks:
+#   caddy:
+#     name: caddynet
+#     external: true

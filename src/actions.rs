@@ -10,51 +10,103 @@ pub struct NewUser {
     pub user_type: db::UserType,
     pub invites_limit: i64,
     pub up_delay: Option<u16>,
-    pub down_delay: Option<u16>,
     pub ntfy_enabled: bool,
-    pub tg_enabled: bool,
-    pub tg_user_id: i64,
-    pub tg_language_code: String,
+    /// Language code for notifications (e.g., "uk", "en")
+    pub language_code: String,
 }
 
-// @NOTE: This does not check for stuff like same telegram user who is already authenticated
-//  using invite and somehow making a new user. That particular case has to be checked on the
-//  telegram UI/adapter level.                                          - andrew, Nov 10 2024
+/// Validate language code: must be 2-3 lowercase ASCII letters (ISO 639 format).
+/// Unsupported codes are accepted but will fall back to English for notifications.
+pub fn validate_language_code(lang: &str) -> Result<(), String> {
+    if lang.len() < 2 || lang.len() > 3 || !lang.chars().all(|c| c.is_ascii_lowercase()) {
+        return Err("Invalid language code: must be 2-3 lowercase letters (e.g., \"uk\", \"en\")".to_string());
+    }
+    if !crate::SUPPORTED_LOCALES.contains(&lang) {
+        warn!("Language code '{lang}' is not a supported locale, notifications will fall back to English");
+    }
+    Ok(())
+}
+
 pub async fn create_user(opts: &NewUser, conn: &mut Conn, context: &Context) -> Result<UserState, String> {
-    // @nocheckin: this acts as lock per token?
-    let tokens;
-    let mut token_id = None;
+    let mut invite_id: Option<db::ID> = None;
+    let mut invite_token_key: Option<String> = None;
+
+    // @NOTE: Hold init_lock for the no-invite (first-user) path to prevent TOCTOU race
+    //  where concurrent requests both see an empty user map and create multiple admins.
+    //  The lock is only contended during the one-time bootstrap; invite-based creation
+    //  skips it entirely.
+    let _init_guard = if opts.invite.is_none() {
+        Some(context.init_lock.lock().await)
+    } else {
+        None
+    };
+
     if let Some(new_invite) = &opts.invite {
-        tokens = context.tokens.write().await;
-        token_id = match tokens.get(new_invite) {
-            Some(invite_id) => Some(invite_id),
+        let tokens = context.invite_tokens.read().await;
+        match tokens.get(new_invite) {
+            Some(id) => {
+                invite_id = Some(*id);
+                invite_token_key = Some(new_invite.clone());
+            }
             None => return Err("Provided invite token does not exist!".to_string()),
         }
+    } else {
+        // No invite provided - only allow Admin creation if no users exist (first init)
+        let users = context.users.read().await;
+        if !users.is_empty() {
+            return Err("Invite token is required to create new users".to_string());
+        }
+        if opts.user_type != db::UserType::Admin {
+            return Err("First user must be an Admin".to_string());
+        }
     }
+
+    // Invited users are always Normal with zero invites — only first-init (no invite) can be Admin
+    let (user_type, invites_limit) = if invite_id.is_some() {
+        (db::UserType::Normal, 0)
+    } else {
+        (opts.user_type, opts.invites_limit)
+    };
+
+    // Validate up_delay if provided
+    if let Some(up_delay) = opts.up_delay {
+        if up_delay < 5 || up_delay > 32767 {
+            return Err("up_delay must be between 5 and 32767 seconds".to_string());
+        }
+    }
+
+    validate_language_code(&opts.language_code)?;
 
     let ntfy = match context.ntfy.create_new_user(opts.ntfy_enabled).await {
         Ok(new_ntfy_user) => new_ntfy_user,
         Err(err) => return Err(format!("{err:?}")),
     };
-    let tg = db::TelegramUser::new(opts.tg_enabled, opts.tg_user_id, opts.tg_language_code.clone());
     let new_user = User::new(
-        opts.user_type,
-        opts.invites_limit,
+        user_type,
+        invites_limit,
         opts.up_delay,
-        opts.down_delay,
+        opts.language_code.clone(),
         &ntfy,
-        &tg,
     );
     let new_state = db::UserState {
         uptime: db::UptimeState::new(new_user.id),
         user: new_user,
         ntfy,
-        tg,
     };
 
-    if let Err(err) = db::create_new_state(conn, &new_state, token_id).await {
+    if let Err(err) = db::create_new_state(conn, &new_state, invite_id.as_ref()).await {
+        // Clean up the ntfy user we already created on the external server
+        if let Err(cleanup_err) = context.ntfy.delete_user(&new_state.ntfy.username).await {
+            warn!("Failed to clean up ntfy user '{}' after DB error: {cleanup_err:?}", new_state.ntfy.username);
+        }
         return Err(format!("{err:?}"));
     };
+
+    // Remove consumed invite from in-memory map
+    if let Some(key) = invite_token_key {
+        context.invite_tokens.write().await.remove(&key);
+    }
+
     context.add_state(new_state.clone()).await;
     Ok(new_state)
 }
@@ -87,18 +139,4 @@ pub async fn create_invite(opts: &NewInvite, conn: &mut Conn, context: &Context)
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(crate = "rocket::serde")]
-pub struct NewUserViaInvite {
-    pub user: NewUser,
-    pub invite: String,
-}
 
-/*
-pub async fn create_user_via_invite(
-    opts: &NewUserViaInvite,
-    conn: &mut Conn,
-    context: &Context,
-) -> Result<UserState, String> {
-}
-*/

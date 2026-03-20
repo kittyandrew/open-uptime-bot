@@ -25,13 +25,11 @@ class TestBase(ABC):
     async def _setup(self):
         self.log("Running setup function...")
         data = {
-            "user_type": "Normal",
+            "user_type": "Admin",  # First user must be Admin when no invite provided
             "invites_limit": 5,
             "up_delay": 5,  # Set minimal allowed delay to test faster.
             "ntfy_enabled": True,
-            "tg_enabled": False,
-            "tg_user_id": 12345,
-            "tg_language_code": "en",
+            "language_code": "uk",  # Tests expect Ukrainian notifications
         }
         r = requests.post(f"{self.base_url}/api/v1/users", json=data)
         r.raise_for_status()

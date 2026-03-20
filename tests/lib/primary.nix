@@ -1,12 +1,13 @@
 {
   pkgs,
   oubot,
+  oubot-cli ? null,
   tester-script,
   ...
 }: let
   c = import ./config.nix;
 in {
-  environment.systemPackages = [oubot tester-script];
+  environment.systemPackages = [oubot tester-script] ++ (if oubot-cli != null then [oubot-cli] else []);
   environment.variables = {
     OUBOT_BASE_URL = "http://${c.host}:${c.oubot-port}";
     NTFY_BASE_URL = "${c.host}:${c.ntfy-port}";
@@ -42,14 +43,14 @@ in {
   };
 
   systemd.services = {
-    # @nocheckin: document/explain
+    # @TODO: document this service setup
     open-uptime-bot = {
       enable = true;
       wantedBy = ["multi-user.target"];
       requires = ["postgresql.service" "ntfy-sh.service"];
       after = ["postgresql.service" "ntfy-sh.service"];
       script = ''
-        # @nocheckin: document (once to not repeat in readme?)
+        # @TODO: document startup sequence (avoid duplicating in readme)
         set -e
 
         # Run ntfy preparation.

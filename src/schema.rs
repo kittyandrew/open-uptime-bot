@@ -2,10 +2,6 @@
 
 pub mod sql_types {
     #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
-    #[diesel(postgres_type(name = "chat_state_enum"))]
-    pub struct ChatStateEnum;
-
-    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "status_enum"))]
     pub struct StatusEnum;
 
@@ -39,20 +35,6 @@ diesel::table! {
 
 diesel::table! {
     use diesel::sql_types::*;
-    use super::sql_types::ChatStateEnum;
-
-    tg_users (id) {
-        id -> Uuid,
-        enabled -> Bool,
-        user_id -> Int8,
-        chat_id -> Nullable<Int8>,
-        chat_state -> ChatStateEnum,
-        language_code -> Text,
-    }
-}
-
-diesel::table! {
-    use diesel::sql_types::*;
     use super::sql_types::StatusEnum;
 
     uptime_states (id) {
@@ -77,20 +59,17 @@ diesel::table! {
         invites_used -> Int8,
         access_token -> Text,
         up_delay -> Int2,
-        down_delay -> Int2,
         ntfy_id -> Uuid,
-        tg_id -> Uuid,
+        language_code -> Text,
     }
 }
 
 diesel::joinable!(uptime_states -> users (user_id));
 diesel::joinable!(users -> ntfy_users (ntfy_id));
-diesel::joinable!(users -> tg_users (tg_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     invites,
     ntfy_users,
-    tg_users,
     uptime_states,
     users,
 );

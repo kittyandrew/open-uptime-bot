@@ -1,5 +1,7 @@
 
 .env
-/target/
+**/target/**
 *.session
+.diesel_lock
+.claude/settings.local.json
 

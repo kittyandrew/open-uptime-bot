@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Open Uptime Bot is a Rust backend for uptime monitoring with Ntfy.sh and Telegram notification integrations. Clients (like the Pico W microcontroller) ping the server periodically; if pings stop, the server sends "down" notifications.
+Open Uptime Bot is a Rust backend for uptime monitoring with Ntfy.sh push notifications. Clients (like the Pico W microcontroller) ping the server periodically; if pings stop, the server sends "down" notifications.
 
 ## Build Commands
 
@@ -22,6 +22,9 @@ docker load < result
 # Database operations
 ./diesel_run.sh       # Run migrations
 ./recreate_db.sh      # Reset database
+
+# Local development (builds docker image, resets DB, starts services, builds CLI)
+source ./setup_local.sh
 ```
 
 ## Architecture
@@ -29,19 +32,18 @@ docker load < result
 ### Core Components
 
 - **src/main.rs** - Entry point, launches Rocket server and background tasks
-- **src/api.rs** - REST endpoints (`/api/v1/up`, `/api/v1/users`, `/api/v1/invites`, `/api/v1/health`, `/api/v1/metrics`)
+- **src/api.rs** - REST endpoints (see API section below)
 - **src/context.rs** - In-memory state (`Context`) with `RwLock<HashMap>` for users, tokens, uptime states
 - **src/bauth.rs** - Bearer token authentication (`Authorization: token <token>`) and per-user rate limiting (2 req/sec)
 - **src/db.rs** - Diesel ORM models and queries
 - **src/ntfy.rs** - Ntfy.sh notification integration
-- **src/tg.rs** - Telegram bot (Grammers MTProto client)
 - **src/prom.rs** - Prometheus metrics collection
 - **src/actions.rs** - Business logic for user/invite creation
+- **cli/src/main.rs** - CLI tool (`oubot-cli`) for server management
 
 ### Background Tasks (spawned in main.rs)
 
 1. **background_handle_down** - Monitors uptime states, triggers "down" notifications after timeout
-2. **background_handle_telegram** - Processes Telegram messages and callbacks
 
 ### State Management
 
@@ -49,42 +51,61 @@ In-memory HashMap cache backed by PostgreSQL. On startup, loads all users/states
 
 ### Database Tables
 
-- **users** - Accounts with access_token, up_delay, down_delay, ntfy_id, tg_id
-- **uptime_states** - Device status (uninitialized/up/down/maintainance), touched_at timestamps
+- **users** - Accounts with access_token, up_delay, language_code, ntfy_id
+- **uptime_states** - Device status (uninitialized/up/down/paused), touched_at, state_changed_at
 - **ntfy_users** - Ntfy.sh credentials per user
-- **tg_users** - Telegram user mappings with chat_state and language_code
-- **invites** - Invitation tokens for user registration
+- **invites** - Invitation tokens for user registration (is_used tracks consumption)
+
+### API Endpoints
+
+- `GET /api/v1/up` - Client heartbeat (BAuth)
+- `GET /api/v1/health` - Health check
+- `GET /api/v1/metrics` - Prometheus metrics
+- `POST /api/v1/users` - Create user (first admin needs no invite; subsequent users need invite token)
+- `POST /api/v1/invites` - Create invite (AdminAuth)
+- `GET /api/v1/invites` - List invites (AdminAuth)
+- `DELETE /api/v1/invites/<id>` - Delete invite (AdminAuth)
+- `GET /api/v1/me` - Current user info (BAuth)
+- `POST /api/v1/me/regenerate-token` - Regenerate access token (BAuth)
+- `GET|PATCH /api/v1/me/ntfy` - Ntfy settings (BAuth)
+- `GET|PATCH /api/v1/me/language` - Language setting (BAuth)
+- `GET /api/v1/admin/users` - List all users (AdminAuth)
+- `GET /api/v1/admin/users/<id>` - Get user (AdminAuth)
+- `DELETE /api/v1/admin/users/<id>` - Delete user (AdminAuth)
 
 ### Notification Flow
 
 1. Client sends `GET /api/v1/up` with bearer token
 2. Server updates uptime state in memory and DB
-3. If state changed (Down→Up or Up→Down after timeout), sends notification via Ntfy.sh and/or Telegram
+3. If state changed (Down->Up or Up->Down after timeout), sends notification via Ntfy.sh
+4. Duration messages are localized (Ukrainian/English) based on user's language_code
 
 ## Testing
 
 Integration tests in `tests/` directory use Python + Nix test harness:
 
 ```bash
-nix flake check  # Runs all tests including api-v1-up-test-success
+nix flake check -L  # Runs all NixOS integration tests
 ```
 
-Test flow: create user → connect to Ntfy.sh WebSocket → send pings → wait for notifications → verify timing.
+Tests: `api-v1-up-test-success` (ping/notification flow), `api-v1-up-duration-message` (duration formatting), `cli-lifecycle` (init, invite, user creation/deletion), `cli-settings` (language, ntfy, token management), `cli-admin` (user listing, invite management).
 
 ## Configuration
 
 Required `.env` variables:
 - `NTFY_BASE_URL`, `NTFY_ADMIN_TOKEN`, `NTFY_USER_TIER` - Ntfy.sh integration
-- `GRAMMERS_BOT_TOKEN`, `GRAMMERS_API_ID`, `GRAMMERS_API_HASH`, `TELEGRAM_SUPERUSER_ID` - Telegram bot
 - `DATABASE_URL` - PostgreSQL connection
 
 Server config in `Rocket.toml` (port 8080).
+
+## CLI Tool
+
+`oubot-cli` -- management CLI built separately (`nix build .#cli`). Subcommands: `init`, `me`, `token`, `ntfy`, `language`, `admin`. Uses env vars `OUBOT_SERVER` and `OUBOT_TOKEN`.
 
 ## Key Dependencies
 
 - **rocket 0.5** - Async web framework
 - **diesel 2.1** - PostgreSQL ORM
-- **grammers-client** - Telegram MTProto
 - **governor** - Rate limiting with DashMap
 - **fluent-templates** - i18n (locales in `locales/`)
 

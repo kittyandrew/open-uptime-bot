@@ -26,16 +26,14 @@
         system,
         ...
       }: let
-        oubotRaw = let
-          craneLib =
-            (crane.mkLib pkgs).overrideToolchain
-            inputs.fenix.packages.${system}.minimal.toolchain;
-        in
-          craneLib.buildPackage {
-            src = ./.;
-            nativeBuildInputs = [pkgs.pkg-config];
-            buildInputs = [pkgs.openssl pkgs.postgresql.lib];
-          };
+        craneLib =
+          (crane.mkLib pkgs).overrideToolchain
+          inputs.fenix.packages.${system}.minimal.toolchain;
+        oubotRaw = craneLib.buildPackage {
+          src = ./.;
+          nativeBuildInputs = [pkgs.pkg-config];
+          buildInputs = [pkgs.openssl pkgs.postgresql.lib];
+        };
         oubot = pkgs.writeShellScriptBin "oubot" ''
           #!${pkgs.runtimeShell}
 
@@ -44,38 +42,53 @@
           ${pkgs.diesel-cli}/bin/diesel migration run
 
           # Finally, starting the actual program.
-          ${oubotRaw}/bin/open-uptime-bot $@
+          ${oubotRaw}/bin/open-uptime-bot "$@"
+        '';
+        oubotCliRaw = craneLib.buildPackage {
+          src = ./cli;
+          nativeBuildInputs = [pkgs.pkg-config];
+          buildInputs = [pkgs.openssl];
+        };
+        oubotCli = pkgs.runCommand "oubot-cli-wrapped" {
+          nativeBuildInputs = [pkgs.makeWrapper];
+        } ''
+          mkdir -p $out/bin
+          makeWrapper ${oubotCliRaw}/bin/oubot-cli $out/bin/oubot-cli \
+            --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [pkgs.openssl]}
         '';
         toNanosec = seconds: seconds * 1000000000; # Specify nanoseconds as per docker spec (LMAO).
       in {
         formatter = pkgs.alejandra;
 
-        packages.docker = pkgs.dockerTools.buildImage {
-          name = "open-uptime-bot";
-          tag = "0.1.1";
-          fromImage = pkgs.dockerTools.pullImage {
-            imageName = "alpine";
-            imageDigest = "sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62";
-            sha256 = "sha256-QUXyvHkl7SC+knv55QXHS9UkLx49JI5DfORpwukvvPE=";
-            finalImageTag = "3.23.3";
-          };
-          copyToRoot = pkgs.buildEnv {
-            name = "image-root"; # @TODO: What is this name actually for?
-            # paths = [oubot pkgs.openssl pkgs.cacert pkgs.curl]; # curl for healthcheck.
-            paths = [oubot pkgs.curl]; # curl for healthcheck.
-          };
-          # @NOTE: Rocket.toml is very small and could be written here, but good for now.
-          runAsRoot = ''
-            #!${pkgs.runtimeShell}
-            cp ${./Rocket.toml} /Rocket.toml
-          '';
-          config = {
-            Cmd = ["${oubot}/bin/oubot"];
-            Env = ["LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [pkgs.openssl]}"];
-            Healthcheck = {
-              Test = ["CMD" "curl" "-sf" "0.0.0.0:8080/api/v1/health"];
-              Interval = toNanosec 60;
-              Timeout = toNanosec 3;
+        packages = {
+          server = oubot;
+          cli = oubotCli;
+          docker = pkgs.dockerTools.buildImage {
+            name = "open-uptime-bot";
+            tag = "2026.3.19";
+            fromImage = pkgs.dockerTools.pullImage {
+              imageName = "alpine";
+              imageDigest = "sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659";
+              sha256 = "sha256-gTKr5yQqJHECyXSyLA9GRT4Qm+ptahnRwy53W8Easb4=";
+              finalImageTag = "3.23.3";
+            };
+            copyToRoot = pkgs.buildEnv {
+              name = "image-root"; # @TODO: What is this name actually for?
+              paths = [oubot oubotCli pkgs.curl]; # curl for healthcheck.
+            };
+            # @NOTE: Rocket.toml is very small and could be written here, but good for now.
+            runAsRoot = ''
+              #!${pkgs.runtimeShell}
+              cp ${./Rocket.toml} /Rocket.toml
+            '';
+            config = {
+              Cmd = ["${oubot}/bin/oubot"];
+              Env = ["LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [pkgs.openssl]}"];
+              Healthcheck = {
+                Test = ["CMD" "curl" "-sf" "0.0.0.0:8080/api/v1/health"];
+                Interval = toNanosec 60;
+                Timeout = toNanosec 3;
+              };
             };
           };
         };
@@ -168,9 +181,20 @@
             inherit test-script;
             inherit oubot;
           };
+          checkArgsWithCliBash = test-script: {
+            inherit pkgs;
+            inherit system;
+            inherit test-script;
+            inherit oubot;
+            oubot-cli = oubotCli;
+            test-script-type = "bash";
+          };
         in {
           api-v1-up-test-success = import ./tests/api-v1-up-test-success.nix (checkArgs ./tests/api-v1-up-test-success.py);
           api-v1-up-duration-message = import ./tests/api-v1-up-duration-message.nix (checkArgs ./tests/api-v1-up-duration-message.py);
+          cli-lifecycle = import ./tests/cli-lifecycle.nix (checkArgsWithCliBash ./tests/cli-lifecycle.sh);
+          cli-settings = import ./tests/cli-settings.nix (checkArgsWithCliBash ./tests/cli-settings.sh);
+          cli-admin = import ./tests/cli-admin.nix (checkArgsWithCliBash ./tests/cli-admin.sh);
         };
       };
     };

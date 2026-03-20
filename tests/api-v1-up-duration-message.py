@@ -29,9 +29,14 @@ class ApiV1UpDurationMessage(TestBase):
     async def on_connected(self, ws):
         # Ping the homeserver, so it knows device was up for the first time,
         # and activates the timer for the first "downtime" notification.
-        # This first ping should NOT generate a notification (Uninitialized -> Up has no message).
         self.log("Sending first ping (Uninitialized -> Up)...")
         await self.ping()
+
+        # First ping (Uninitialized -> Up) fires a "device connected" notification.
+        message = await self.wait_for_message(ws)
+        assert message["event"] == "message"
+        assert message["title"] == "Девайс під'єднано!"
+        self.log("Device connected notification received.")
 
         # Wait for the Down notification (after up_delay timeout of 5 seconds).
         self.log("Waiting for Down notification...")
