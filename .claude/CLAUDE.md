@@ -27,6 +27,11 @@ docker load < result
 source ./setup_local.sh
 ```
 
+### Local Dev Gotchas
+
+- **Rocket log level**: Successful requests aren't logged at default level. Use `curl .../api/v1/metrics | grep oubot_uptime` to verify heartbeats.
+- **`nix develop -c`**: Use this for stateless commands (e.g., `nix develop -c oubot-cli me`). The CLI and espflash are both in the devShell.
+
 ## Architecture
 
 ### Core Components
@@ -116,7 +121,7 @@ Server config in `Rocket.toml` (port 8080, `ip_header = "X-Forwarded-For"` for r
 
 ## CLI Tool
 
-`oubot-cli` -- management CLI built separately (`nix build .#cli`). Subcommands: `init`, `me`, `token`, `ntfy`, `language`, `admin`. Uses env vars `OUBOT_SERVER` and `OUBOT_TOKEN`.
+`oubot-cli` -- management CLI, available in the devShell (`nix develop -c oubot-cli ...`) or via `nix build .#cli`. Subcommands: `init`, `me`, `token`, `ntfy`, `language`, `admin`. Uses env vars `OUBOT_SERVER` and `OUBOT_TOKEN`.
 
 ## Key Dependencies
 
@@ -124,6 +129,14 @@ Server config in `Rocket.toml` (port 8080, `ip_header = "X-Forwarded-For"` for r
 - **diesel 2.1** - PostgreSQL ORM
 - **governor** - IP-based rate limiting with DashMap
 - **fluent-templates** - i18n (locales in `locales/`)
+
+## ESP32-C3 Client
+
+`clients/esp32/` — Rust no_std firmware (esp-hal 1.0.0 + esp-rtos + reqwless). Sends `GET /api/v1/up` heartbeats every 5s with bearer auth. WiFi reconnect, exponential backoff, LED feedback. Board: ESP32-C3 (RISC-V), GPIO8 LED (active-low).
+
+Build/flash workflow: see `docs/USAGE.md`. Nix build: `nix build .#esp32-client --impure` (requires all 4 `OUBOT_*` env vars). DevShell uses `build-std` (nightly); Nix build uses fenix pre-built `rust-std` instead.
+
+See `docs/specs/esp32-security-metrics.md` for the full design spec. See `docs/SETUP.md` for server deployment.
 
 ## Pico W Client
 

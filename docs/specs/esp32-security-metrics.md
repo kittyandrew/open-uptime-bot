@@ -156,59 +156,51 @@ Add lightweight metric checks (`curl /api/v1/metrics | grep '^oubot_'`) to exist
 
 ## Phase 2: ESP32 Rust Client
 
-### 2.1 Framework Choice: esp-hal
+### 2.1 Framework: esp-hal
 
-Using esp-hal (stable 1.0, Oct 2025). Espressif officially backs this path. WiFi+TLS stack (`esp-radio`) is the next stabilization target.
+Using esp-hal 1.0.0 (stable, Oct 2025) + esp-radio 0.17.0 + reqwless 0.13.0 with embedded-tls. Espressif officially backs this path. Board: ESP32-C3 (RISC-V), standard Rust toolchain via `riscv32imc-unknown-none-elf` target.
 
-**If esp-hal WiFi+TLS proves unstable**: Fall back to esp-idf-svc (std, mature WiFi/TLS). This is a runtime decision during Phase 2 — the client logic is identical either way.
+### 2.2 Setup (Completed)
 
-**Board target**: Need to confirm which ESP32 variant Andrew has:
-- Xtensa (ESP32, ESP32-S2, S3): Needs forked Rust compiler via espup
-- RISC-V (ESP32-C3, C6, H2): Standard Rust toolchain, simpler Nix integration
-
-### 2.2 Interactive Setup Session
-
-Before implementation, hands-on session:
-1. Identify which ESP32 board Andrew has (variant, USB interface)
-2. Set up the toolchain (`espup` or standard rustup for RISC-V)
-3. Flash a minimal "blink" program to verify the toolchain works
-4. Test WiFi connectivity
-5. Test HTTPS request to the server
-6. Iterate on the client until it works end-to-end
+Incremental hardware bring-up: toolchain → blink → WiFi → HTTPS → full client. All steps verified on real hardware.
 
 ### 2.3 Client Architecture
 
 ```
 clients/esp32/
+  .cargo/
+    config.toml       # Target, rustflags, build-std (stripped by Nix build)
   Cargo.toml
-  build.rs          # Reads env vars, emits compile-time config
+  Cargo.lock
+  build.rs            # Warns on missing/empty env vars, sets cargo:rerun-if-env-changed
+  rust-toolchain.toml # Nightly + riscv32imc target + rust-src
   src/
-    main.rs         # WiFi connect, heartbeat loop, LED feedback
+    main.rs           # WiFi connect, heartbeat loop, LED feedback
 ```
 
-#### Compile-time configuration (Option C)
+#### Compile-time configuration
 All config baked in via `env!()` macros populated by Nix build or manual env vars:
 - `OUBOT_WIFI_SSID` — WiFi network name
 - `OUBOT_WIFI_PASS` — WiFi password
 - `OUBOT_SERVER` — Server URL (e.g. `https://oubot.kittyandrew.dev`)
 - `OUBOT_TOKEN` — Access token (e.g. `tk_abcdef1234567890`)
 
-Token/WiFi changes require rebuilding + re-flashing. This is acceptable for the current use case. WiFi AP provisioning (Option A) is a future enhancement.
+Token/WiFi changes require rebuilding + re-flashing. This is acceptable for the current use case. WiFi AP provisioning is a future enhancement.
 
 #### Client behavior
 1. Connect to WiFi (retry with backoff on failure)
-2. Establish persistent HTTPS connection to server (with proper certificate validation)
+2. Establish persistent HTTPS connection to server (TLS encrypted, no cert verification — `TlsVerify::None`; reqwless 0.14+ adds `TlsVerify::Certificate` but requires embassy-net ecosystem upgrade)
 3. Send `GET /api/v1/up` with `Authorization: token <TOKEN>` every ~5 seconds
 4. On connection drop: reconnect (WiFi first, then HTTPS)
 5. LED feedback: blink on ping, solid on error, off during sleep
 
-Key improvement over Pico W: persistent HTTPS connection eliminates per-ping TLS handshake overhead.
+Key improvement over Pico W: persistent HTTPS connection via `reqwless::HttpResource` eliminates per-ping TLS handshake overhead. Single handshake at connect; heartbeats reuse the session. On connection drop, reconnects with fresh TLS.
 
 ### 2.4 Nix Build Integration
 
 Add to `flake.nix`. Exact shape depends on the ESP32 variant (toolchain differences), worked out during the setup session (2.2).
 
-### 2.5 USAGE.md
+### 2.5 USAGE.md (Completed)
 
 End-user guide for invite token holders. Written after the ESP32 client implementation stabilizes. Covers:
 1. Prerequisites: ESP32 board, USB cable, WiFi credentials, invite token
@@ -251,7 +243,7 @@ Depends on Phase 2. Same patterns apply (different HAL, same application logic).
 4. **Token size**: 16 alphanumeric chars (`tk_` + 16 = 19 total, ~95 bits). No migration of existing tokens.
 5. **fail2ban test**: Two-node NixOS test (separate client/server VMs).
 6. **Client testing**: No separate test client binary. Docker E2E test validates the production artifact instead.
-7. **ESP32 config**: Option C (compile-time bake everything). WiFi AP provisioning is a future enhancement.
+7. **ESP32 config**: Compile-time bake everything via `env!()`. WiFi AP provisioning is a future enhancement.
 8. **TLS gap**: Noted in spec, deferred to Phase 3 (Pico W Rust rewrite).
 9. **Phase 3**: Committed, not conditional.
 10. **fail2ban regex**: Starting point provided, must be verified against actual journald output during implementation.
@@ -262,5 +254,11 @@ Depends on Phase 2. Same patterns apply (different HAL, same application logic).
 
 ## Open Questions
 
-1. **ESP32 variant**: Which board does Andrew have? Determines toolchain.
-2. **esp-hal WiFi+TLS readiness**: Verify during interactive setup session.
+*None — all resolved.*
+
+## Resolved (Phase 2)
+
+14. **ESP32 variant**: ESP32-C3 (RISC-V, rev v0.4, 4MB flash). Standard Rust toolchain via `riscv32imc-unknown-none-elf` target.
+15. **esp-hal WiFi+TLS**: Works. esp-hal 1.0.0 + esp-radio 0.17.0 + reqwless 0.13.0 with embedded-tls. TLS handshake completes in ~170ms. No cert verification (same as Pico W).
+16. **GPIO8 LED polarity**: Active-low on this board (HIGH = off, LOW = on).
+17. **Nix build**: crane with fenix `combine` (nightly rustc/cargo + pre-built riscv32imc rust-std). `build-std` incompatible with crane dep vendoring; devShell uses `build-std` via `complete.toolchain` with rust-src.

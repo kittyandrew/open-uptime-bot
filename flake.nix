@@ -29,11 +29,13 @@
         craneLib =
           (crane.mkLib pkgs).overrideToolchain
           inputs.fenix.packages.${system}.minimal.toolchain;
+
         oubotRaw = craneLib.buildPackage {
           src = ./.;
           nativeBuildInputs = [pkgs.pkg-config];
           buildInputs = [pkgs.openssl pkgs.postgresql.lib];
         };
+
         oubot = pkgs.writeShellScriptBin "oubot" ''
           #!${pkgs.runtimeShell}
 
@@ -44,18 +46,51 @@
           # Finally, starting the actual program.
           ${oubotRaw}/bin/open-uptime-bot "$@"
         '';
+
         oubotCliRaw = craneLib.buildPackage {
           src = ./cli;
           nativeBuildInputs = [pkgs.pkg-config];
           buildInputs = [pkgs.openssl];
         };
-        oubotCli = pkgs.runCommand "oubot-cli-wrapped" {
-          nativeBuildInputs = [pkgs.makeWrapper];
-        } ''
-          mkdir -p $out/bin
-          makeWrapper ${oubotCliRaw}/bin/oubot-cli $out/bin/oubot-cli \
-            --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [pkgs.openssl]}
-        '';
+
+        oubotCli =
+          pkgs.runCommand "oubot-cli-wrapped" {
+            nativeBuildInputs = [pkgs.makeWrapper];
+          } ''
+            mkdir -p $out/bin
+            makeWrapper ${oubotCliRaw}/bin/oubot-cli $out/bin/oubot-cli \
+              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [pkgs.openssl]}
+          '';
+
+        # ESP32-C3 cross-compilation toolchain with pre-built riscv32imc std.
+        # @NOTE: Uses nightly + riscv32imc rust-std to avoid build-std (incompatible with crane).
+        craneLibEsp32 = (crane.mkLib pkgs).overrideToolchain (inputs.fenix.packages.${system}.combine [
+          inputs.fenix.packages.${system}.latest.rustc
+          inputs.fenix.packages.${system}.latest.cargo
+          inputs.fenix.packages.${system}.targets."riscv32imc-unknown-none-elf".latest.rust-std
+        ]);
+
+        # @NOTE: Requires `nix build --impure` with all 4 env vars set.
+        # builtins.getEnv returns "" in pure mode; const assertions in main.rs
+        # reject empty values at compile time.
+        esp32Client = craneLibEsp32.buildPackage {
+          pname = "esp32-uptime-client";
+          version = "0.1.0";
+          src = ./clients/esp32;
+          OUBOT_WIFI_SSID = builtins.getEnv "OUBOT_WIFI_SSID";
+          OUBOT_WIFI_PASS = builtins.getEnv "OUBOT_WIFI_PASS";
+          OUBOT_SERVER = builtins.getEnv "OUBOT_SERVER";
+          OUBOT_TOKEN = builtins.getEnv "OUBOT_TOKEN";
+          doCheck = false; # Can't run no_std binary on build host.
+          cargoExtraArgs = "--target riscv32imc-unknown-none-elf";
+          # @NOTE: Strip build-std from .cargo/config.toml.
+          # Nix build uses pre-built rust-std from fenix; build-std is only
+          # for devShell where the complete.toolchain has rust-src.
+          postUnpack = ''
+            sed -i '/^\[unstable\]$/d; /^build-std/d' $sourceRoot/.cargo/config.toml
+          '';
+        };
+
         toNanosec = seconds: seconds * 1000000000; # Specify nanoseconds as per docker spec (LMAO).
       in {
         formatter = pkgs.alejandra;
@@ -63,6 +98,7 @@
         packages = {
           server = oubot;
           cli = oubotCli;
+          esp32-client = esp32Client;
           docker = pkgs.dockerTools.buildImage {
             name = "open-uptime-bot";
             tag = "2026.3.20";
@@ -145,12 +181,15 @@
                 clippy
                 rustc
                 # Dev dependencies
+                oubotCli
                 openssl
                 bore-cli
                 diesel-cli
                 shellcheck
                 # Runtime dependency
                 postgresql.lib
+                # ESP32 dev stuff.
+                espflash
                 # Pico W dev stuff.
                 pythonCustom
                 custom-pico-sdk
@@ -162,14 +201,14 @@
                 export PICO_SDK_PATH=${custom-pico-sdk}/lib/pico-sdk/
                 export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath libs}
 
-                cd clients/pico-w
-                python -m virtualenv -q .venv && source .venv/bin/activate
-                # We want to install additional requirements into a virtual env [for now].
-                if [[ -f requirements.txt ]]; then
-                  # @NOTE: In happy-case it is much cleaner to suppress the output. Is it bad? IDK.
-                  python -m pip install -qr requirements.txt
-                fi
-                cd ../..
+                # @TODO: Phase 3 — fix Pico W virtualenv setup to not break
+                # `nix develop -c` by changing the working directory.
+                # cd clients/pico-w
+                # python -m virtualenv -q .venv && source .venv/bin/activate
+                # if [[ -f requirements.txt ]]; then
+                #   python -m pip install -qr requirements.txt
+                # fi
+                # cd ../..
 
                 echo -e "\nWelcome to the shell :)\n"
               '';
@@ -204,28 +243,29 @@
         in {
           # @NOTE: Verifies every route handler has a rate-limiting guard.
           #  See src/main.rs @WARNING and src/bauth.rs RateLimitGuard.
-          route-guard-lint = pkgs.runCommand "route-guard-lint" {
-            src = ./src;
-            nativeBuildInputs = [pkgs.gnugrep pkgs.gnused];
-          } ''
-            FAIL=0
-            for file in $src/api.rs $src/main.rs $src/prom.rs; do
-              while IFS= read -r line_num; do
-                sig=$(sed -n "$line_num,$((line_num+3))p" "$file")
-                if ! echo "$sig" | grep -qE '(BAuth|AdminAuth|RateLimitGuard)'; then
-                  echo "FAIL: $(basename $file):$line_num - route handler missing rate-limit guard"
-                  echo "  $sig"
-                  FAIL=1
-                fi
-              done < <(grep -nE '#\[(get|post|put|patch|delete)\(' "$file" | cut -d: -f1)
-            done
-            if [ "$FAIL" = "1" ]; then
-              echo "Every route handler must include BAuth, AdminAuth, or RateLimitGuard."
-              exit 1
-            fi
-            echo "All route handlers have rate-limiting guards."
-            mkdir -p $out && touch $out/ok
-          '';
+          route-guard-lint =
+            pkgs.runCommand "route-guard-lint" {
+              src = ./src;
+              nativeBuildInputs = [pkgs.gnugrep pkgs.gnused];
+            } ''
+              FAIL=0
+              for file in $src/api.rs $src/main.rs $src/prom.rs; do
+                while IFS= read -r line_num; do
+                  sig=$(sed -n "$line_num,$((line_num+3))p" "$file")
+                  if ! echo "$sig" | grep -qE '(BAuth|AdminAuth|RateLimitGuard)'; then
+                    echo "FAIL: $(basename $file):$line_num - route handler missing rate-limit guard"
+                    echo "  $sig"
+                    FAIL=1
+                  fi
+                done < <(grep -nE '#\[(get|post|put|patch|delete)\(' "$file" | cut -d: -f1)
+              done
+              if [ "$FAIL" = "1" ]; then
+                echo "Every route handler must include BAuth, AdminAuth, or RateLimitGuard."
+                exit 1
+              fi
+              echo "All route handlers have rate-limiting guards."
+              mkdir -p $out && touch $out/ok
+            '';
           api-v1-up-test-success = import ./tests/api-v1-up-test-success.nix (checkArgs ./tests/api-v1-up-test-success.py);
           api-v1-up-duration-message = import ./tests/api-v1-up-duration-message.nix (checkArgs ./tests/api-v1-up-duration-message.py);
           cli-lifecycle = import ./tests/cli-lifecycle.nix (checkArgsWithCliBash ./tests/cli-lifecycle.sh);

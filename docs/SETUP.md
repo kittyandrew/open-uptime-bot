@@ -7,16 +7,13 @@ Complete guide for deploying Open Uptime Bot from scratch with Docker, creating 
 - Docker and Docker Compose
 - A self-hosted [ntfy.sh](https://ntfy.sh) instance (or the public one)
 - A PostgreSQL-compatible setup (included via Docker Compose)
-- [Nix](https://nixos.org/) for building the Docker image and CLI
+- [Nix](https://nixos.org/) with flakes enabled (for building images and using the CLI)
 
-## 1. Build the Docker image and CLI
+## 1. Build the Docker image
 
 ```bash
 nix build .#docker
 docker load < result
-
-nix build .#cli
-# CLI binary is at ./result/bin/oubot-cli
 ```
 
 ## 2. Configure ntfy.sh
@@ -79,7 +76,7 @@ The first user created (without an invite token) becomes the admin:
 ```bash
 export OUBOT_SERVER=http://localhost:8080
 
-./result/bin/oubot-cli --server "$OUBOT_SERVER" init
+nix develop -c oubot-cli init
 ```
 
 This prints your admin access token. Save it:
@@ -91,7 +88,7 @@ export OUBOT_TOKEN=<printed-token>
 Verify:
 
 ```bash
-./result/bin/oubot-cli me
+nix develop -c oubot-cli me
 ```
 
 ## 6. Create a regular user
@@ -100,11 +97,11 @@ Generate an invite token, then use it to create a user:
 
 ```bash
 # As admin: create an invite
-./result/bin/oubot-cli admin create-invite
+nix develop -c oubot-cli admin create-invite
 # Prints: Invite token: <invite-token>
 
 # Create a new user with that invite
-./result/bin/oubot-cli --server "$OUBOT_SERVER" init --invite <invite-token>
+nix develop -c oubot-cli init --invite <invite-token>
 # Prints the new user's access token
 ```
 
@@ -112,7 +109,11 @@ Save the user's access token — this is what goes on the client device.
 
 ## 7. Configure and flash the client device
 
-### Pico W (ESP32-compatible MicroPython)
+### ESP32-C3 (Rust)
+
+See [USAGE.md](USAGE.md) for the full ESP32 setup guide (build, flash, verify).
+
+### Pico W (MicroPython)
 
 The client firmware is in `clients/pico-w/blink.py`. Edit it with your configuration:
 
@@ -145,14 +146,14 @@ The device will connect to WiFi and ping `GET /api/v1/up` every ~5 seconds. If p
 
 ```bash
 # Check ntfy settings
-./result/bin/oubot-cli ntfy show
+nix develop -c oubot-cli ntfy show
 
 # Disable/enable notifications
-./result/bin/oubot-cli ntfy disable
-./result/bin/oubot-cli ntfy enable
+nix develop -c oubot-cli ntfy disable
+nix develop -c oubot-cli ntfy enable
 
 # Change notification language (uk or en)
-./result/bin/oubot-cli language en
+nix develop -c oubot-cli language en
 ```
 
 ## 9. Regenerate tokens
@@ -160,7 +161,7 @@ The device will connect to WiFi and ping `GET /api/v1/up` every ~5 seconds. If p
 If a token is compromised:
 
 ```bash
-./result/bin/oubot-cli token regenerate
+nix develop -c oubot-cli token regenerate
 ```
 
 This invalidates the old token immediately. You'll need to update the device firmware with the new token and re-flash.

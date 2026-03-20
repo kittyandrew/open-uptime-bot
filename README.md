@@ -1,7 +1,7 @@
 # Open Uptime Bot
 An open-source backend for uptime status or other physical signals, allowing to setup notifications and alerts.
 
-See [SETUP.md](SETUP.md) for the full deployment and device setup guide.
+See [docs/SETUP.md](docs/SETUP.md) for server deployment and [docs/USAGE.md](docs/USAGE.md) for client device setup.
 
 ### @TODOs
 - [ ] More data in notifications:
