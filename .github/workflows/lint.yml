@@ -1,0 +1,49 @@
+name: lint
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Cache Nix store
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: cargo fmt
+        run: nix develop -c cargo fmt --check
+
+      - name: cargo fmt (cli)
+        run: nix develop -c bash -c "cd cli && cargo fmt --check"
+
+      - name: cargo clippy
+        run: nix develop -c cargo clippy -- -D warnings
+
+      - name: cargo clippy (cli)
+        run: nix develop -c bash -c "cd cli && cargo clippy -- -D warnings"
+
+      - name: shellcheck
+        run: nix develop -c shellcheck tests/*.sh
+
+      - name: black
+        run: nix develop -c bash -c "black --line-length=131 --check tests/"
+
+      - name: flake8
+        run: nix develop -c bash -c "flake8 --max-line-length=131 tests/"
+
+      - name: isort
+        run: nix develop -c bash -c "isort --check tests/"
+
+      - name: alejandra
+        run: nix shell nixpkgs#alejandra -c alejandra --check .
+
+      - name: deadnix
+        run: nix shell nixpkgs#deadnix -c deadnix --fail --no-lambda-pattern-names .

@@ -118,11 +118,22 @@ async fn dispatch_notifications(item: db::UserState, context: context::Context, 
             priority: "high".to_string(), // Configurable for user.
         };
 
+        let ntfy_type = match item.uptime.status {
+            db::UpStatus::Uninitialized => "connected",
+            db::UpStatus::Up => "up",
+            db::UpStatus::Down => "down",
+            db::UpStatus::Paused => "paused",
+        };
+        let ntfy_type = ntfy_type.to_string();
         tokio::spawn(async move {
             info!("Sending ntfy {notification:?} to {u:?}", u = item.ntfy.username);
-            if let Err(err) = context.ntfy.send_notification(notification).await {
-                warn!("Failed attempting to send ntfy-cation: {err:?}");
-            };
+            match context.ntfy.send_notification(notification).await {
+                Ok(_) => prom::NOTIFICATIONS.with_label_values(&[&ntfy_type, "success"]).inc(),
+                Err(err) => {
+                    warn!("Failed attempting to send ntfy-cation: {err:?}");
+                    prom::NOTIFICATIONS.with_label_values(&[&ntfy_type, "failure"]).inc();
+                }
+            }
         });
     }
 }
@@ -141,6 +152,7 @@ async fn background_handle_down(context: context::Context, db_pool: PgPool) {
                 if let Ok(remaining) = query_at.duration_since(now) {
                     sleep_for = sleep_for.min(remaining);
                 } else if let Some(duration) = item.uptime.go_down() {
+                    prom::UPTIME_STATE.with_label_values(&[&item.user.id.to_string()]).set(i64::from(&item.uptime.status));
                     states_to_persist.push(item.uptime.clone());
                     tokio::spawn(dispatch_notifications(item.clone(), context.clone(), Some(duration)));
                 }
@@ -167,19 +179,27 @@ async fn background_handle_down(context: context::Context, db_pool: PgPool) {
 }
 
 #[get("/api/v1/health")]
-async fn api_health() -> Value {
+async fn api_health(_rl: bauth::RateLimitGuard) -> Value {
     // TODO: proper healthcheck.
     return json!({"status": 200});
 }
 
 #[get("/api/v1/up")]
 async fn api_up(bauth: bauth::BAuth, mut conn: Connection<DB>, context: &State<context::Context>) -> Status {
+    let uid_str = bauth.uid.to_string();
     let uptime_snapshot = {
         let mut guard = context.users.write().await;
         let Some(item) = guard.get_mut(&bauth.uid) else {
             // User was deleted between BAuth validation and here (race with delete_user)
             return Status::Unauthorized;
         };
+        // Update last-seen metric
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        prom::LAST_SEEN_TIMESTAMP.with_label_values(&[&uid_str]).set(now_ts);
+
         match item.uptime.touch() {
             db::TouchResult::Connected => {
                 // Clone with Uninitialized status so dispatch uses "device connected" title
@@ -200,6 +220,8 @@ async fn api_up(bauth: bauth::BAuth, mut conn: Connection<DB>, context: &State<c
             }
             db::TouchResult::NoChange => {}
         }
+        // Update uptime state metric
+        prom::UPTIME_STATE.with_label_values(&[&uid_str]).set(i64::from(&item.uptime.status));
         item.uptime.clone()
     };
     // Persist uptime state to DB (outside the write lock to avoid blocking)
@@ -218,6 +240,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // gatherer and encoder, as opposed to not shown until first increment).
     prom::TOTAL_REQUESTS_SERVED.reset();
     prom::ENDPOINTS_REQUESTS_SERVED.reset();
+    prom::ACTIVE_USERS.set(0);
 
     let figment = rocket::Config::figment().merge((
         "databases.open-uptime-bot",
@@ -231,6 +254,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         },
     ));
 
+    // @WARNING: Every route handler MUST use BAuth, AdminAuth, or RateLimitGuard
+    //  to ensure IP rate limiting coverage. The IpRateLimitFairing sets a flag but
+    //  can't reject requests in Rocket 0.5 — guards must check the flag.
+    //  The route-guard-lint check in flake.nix enforces this at build time.
     rocket::custom(figment)
         .mount(
             "/",
@@ -258,6 +285,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Encoder for the prometheus metadata.
         .manage(TextEncoder::new())
         .manage(bauth::get_rate_limiter())
+        .attach(bauth::IpRateLimitFairing)
         .attach(prom::PrometheusCollection)
         .attach(AdHoc::try_on_ignite("init db load", |rocket| async {
             // Populating users/tokens from the database.
@@ -266,6 +294,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             info!("Loading {n} users from the database!", n = items.len());
 
             let context = rocket.state::<context::Context>().unwrap();
+            for state in &items {
+                // Initialize per-user metrics from DB state
+                let uid_str = state.user.id.to_string();
+                prom::UPTIME_STATE.with_label_values(&[&uid_str]).set(i64::from(&state.uptime.status));
+                let touched_ts = state.uptime.touched_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                prom::LAST_SEEN_TIMESTAMP.with_label_values(&[&uid_str]).set(touched_ts);
+            }
+            prom::ACTIVE_USERS.set(items.len() as i64);
             for state in items {
                 context.add_state(state).await;
             }

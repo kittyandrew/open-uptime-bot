@@ -206,16 +206,6 @@ fn print_json(value: &Value) {
 mod fmt {
     use serde_json::Value;
 
-    pub fn status_icon(status: &str) -> &'static str {
-        match status.to_lowercase().as_str() {
-            "up" => "[UP]",
-            "down" => "[DOWN]",
-            "paused" => "[PAUSED]",
-            "uninitialized" => "[INIT]",
-            _ => "[?]",
-        }
-    }
-
     pub fn bool_icon(v: bool) -> &'static str {
         if v { "[ON]" } else { "[OFF]" }
     }

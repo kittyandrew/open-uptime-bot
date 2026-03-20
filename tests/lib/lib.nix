@@ -7,6 +7,7 @@ test:
   system,
   oubot,
   oubot-cli ? null,
+  docker-image ? null,
   test-script,
   test-script-type ? "python",
 }: let
@@ -41,6 +42,7 @@ in
       inherit oubot;
       inherit oubot-cli;
       inherit tester-script;
+      inherit docker-image;
     };
     # This makes `self` available in the NixOS configuration of our virtual machines.
     # This is useful for referencing modules or packages from your own flake

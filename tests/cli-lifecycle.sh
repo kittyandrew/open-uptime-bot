@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-SERVER="http://0.0.0.0:8000"
+SERVER="${OUBOT_BASE_URL:?OUBOT_BASE_URL must be set}"
 
 echo "============================================================"
 echo "CLI Lifecycle Test"
@@ -106,6 +106,24 @@ if oubot-cli --server "$SERVER" --token "$USER_TOKEN" me 2>/dev/null; then
     exit 1
 fi
 echo "User's token correctly rejected after deletion"
+
+# Step 8: Verify Prometheus metrics reflect the operations
+echo ""
+echo "[Step 8] Verify Prometheus metrics"
+sleep 1  # Let IP rate limiter refill after rapid CLI commands
+METRICS=$(curl -sf "$SERVER/api/v1/metrics")
+
+# After step 6 (user deleted), active_users should be 1 (admin only)
+echo "$METRICS" | grep -q '^oubot_active_users 1' || {
+    echo "ERROR: Expected oubot_active_users to be 1"; exit 1
+}
+echo "oubot_active_users correct"
+
+# Request metrics should be populated
+echo "$METRICS" | grep -q '^oubot_requests_total ' || {
+    echo "ERROR: Expected oubot_requests_total to exist"; exit 1
+}
+echo "oubot_requests_total present"
 
 echo ""
 echo "============================================================"

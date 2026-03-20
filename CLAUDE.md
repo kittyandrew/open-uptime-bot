@@ -34,7 +34,7 @@ source ./setup_local.sh
 - **src/main.rs** - Entry point, launches Rocket server and background tasks
 - **src/api.rs** - REST endpoints (see API section below)
 - **src/context.rs** - In-memory state (`Context`) with `RwLock<HashMap>` for users, tokens, uptime states
-- **src/bauth.rs** - Bearer token authentication (`Authorization: token <token>`) and per-user rate limiting (2 req/sec)
+- **src/bauth.rs** - Bearer token authentication (`Authorization: token <token>`), IP-based rate limiting (5 req/sec fairing), auth failure logging for fail2ban
 - **src/db.rs** - Diesel ORM models and queries
 - **src/ntfy.rs** - Ntfy.sh notification integration
 - **src/prom.rs** - Prometheus metrics collection
@@ -88,7 +88,17 @@ Integration tests in `tests/` directory use Python + Nix test harness:
 nix flake check -L  # Runs all NixOS integration tests
 ```
 
-Tests: `api-v1-up-test-success` (ping/notification flow), `api-v1-up-duration-message` (duration formatting), `cli-lifecycle` (init, invite, user creation/deletion), `cli-settings` (language, ntfy, token management), `cli-admin` (user listing, invite management).
+Test names are defined in `flake.nix` under `checks`. Each test has a `.nix` file in `tests/` with a corresponding script (`.py` or `.sh`) or inline Python testScript. Run `nix eval .#checks.x86_64-linux --apply 'x: builtins.attrNames x'` to list all test names.
+
+Test infrastructure in `tests/lib/`:
+- **config.nix** - Shared constants (ports, credentials, tier name)
+- **infra.nix** - PostgreSQL + ntfy-sh service definitions
+- **services.nix** - Imports infra.nix, adds oubot systemd service
+- **ntfy-bootstrap.nix** - Shared ntfy admin setup script fragment
+- **primary.nix** - Imports services.nix, sets env vars and packages for single-node tests
+- **lib.nix** - Test runner (builds Python/bash test scripts, passes args to NixOS test)
+
+Native tests import `primary.nix` (full stack). Docker E2E imports `infra.nix` directly (runs oubot via Docker container instead of systemd).
 
 ## Configuration
 
@@ -96,7 +106,13 @@ Required `.env` variables:
 - `NTFY_BASE_URL`, `NTFY_ADMIN_TOKEN`, `NTFY_USER_TIER` - Ntfy.sh integration
 - `DATABASE_URL` - PostgreSQL connection
 
-Server config in `Rocket.toml` (port 8080).
+Server config in `Rocket.toml` (port 8080, `ip_header = "X-Forwarded-For"` for reverse proxy IP extraction).
+
+## Security
+
+- **Rate limiting**: IP-based via governor fairing (5 req/sec per IP), covers all endpoints
+- **Auth logging**: Failed auth attempts logged with client IP for fail2ban integration (`[AUTH] ip=... result=...`). fail2ban jail defined inline in NixOS deployer config (not shipped here).
+- **Metrics endpoint**: `/api/v1/metrics` is unauthenticated. Block in reverse proxy for production (only expose to internal monitoring network)
 
 ## CLI Tool
 
@@ -106,7 +122,7 @@ Server config in `Rocket.toml` (port 8080).
 
 - **rocket 0.5** - Async web framework
 - **diesel 2.1** - PostgreSQL ORM
-- **governor** - Rate limiting with DashMap
+- **governor** - IP-based rate limiting with DashMap
 - **fluent-templates** - i18n (locales in `locales/`)
 
 ## Pico W Client

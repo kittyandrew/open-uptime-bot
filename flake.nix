@@ -65,7 +65,7 @@
           cli = oubotCli;
           docker = pkgs.dockerTools.buildImage {
             name = "open-uptime-bot";
-            tag = "2026.3.19";
+            tag = "2026.3.20";
             fromImage = pkgs.dockerTools.pullImage {
               imageName = "alpine";
               imageDigest = "sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659";
@@ -148,6 +148,7 @@
                 openssl
                 bore-cli
                 diesel-cli
+                shellcheck
                 # Runtime dependency
                 postgresql.lib
                 # Pico W dev stuff.
@@ -175,6 +176,7 @@
             };
 
         checks = let
+          docker-image = self'.packages.docker;
           checkArgs = test-script: {
             inherit pkgs;
             inherit system;
@@ -189,12 +191,48 @@
             oubot-cli = oubotCli;
             test-script-type = "bash";
           };
+          checkArgsWithDocker = test-script: {
+            inherit pkgs;
+            inherit system;
+            inherit test-script;
+            inherit oubot;
+            inherit docker-image;
+          };
+          # @NOTE: security-auth test needs no test-script (inline Python in .nix),
+          #  but lib.nix requires one. Pass a no-op script.
+          noopScript = pkgs.writeText "noop" "true";
         in {
+          # @NOTE: Verifies every route handler has a rate-limiting guard.
+          #  See src/main.rs @WARNING and src/bauth.rs RateLimitGuard.
+          route-guard-lint = pkgs.runCommand "route-guard-lint" {
+            src = ./src;
+            nativeBuildInputs = [pkgs.gnugrep pkgs.gnused];
+          } ''
+            FAIL=0
+            for file in $src/api.rs $src/main.rs $src/prom.rs; do
+              while IFS= read -r line_num; do
+                sig=$(sed -n "$line_num,$((line_num+3))p" "$file")
+                if ! echo "$sig" | grep -qE '(BAuth|AdminAuth|RateLimitGuard)'; then
+                  echo "FAIL: $(basename $file):$line_num - route handler missing rate-limit guard"
+                  echo "  $sig"
+                  FAIL=1
+                fi
+              done < <(grep -nE '#\[(get|post|put|patch|delete)\(' "$file" | cut -d: -f1)
+            done
+            if [ "$FAIL" = "1" ]; then
+              echo "Every route handler must include BAuth, AdminAuth, or RateLimitGuard."
+              exit 1
+            fi
+            echo "All route handlers have rate-limiting guards."
+            mkdir -p $out && touch $out/ok
+          '';
           api-v1-up-test-success = import ./tests/api-v1-up-test-success.nix (checkArgs ./tests/api-v1-up-test-success.py);
           api-v1-up-duration-message = import ./tests/api-v1-up-duration-message.nix (checkArgs ./tests/api-v1-up-duration-message.py);
           cli-lifecycle = import ./tests/cli-lifecycle.nix (checkArgsWithCliBash ./tests/cli-lifecycle.sh);
           cli-settings = import ./tests/cli-settings.nix (checkArgsWithCliBash ./tests/cli-settings.sh);
           cli-admin = import ./tests/cli-admin.nix (checkArgsWithCliBash ./tests/cli-admin.sh);
+          security-auth = import ./tests/security-auth.nix (checkArgs noopScript);
+          docker-e2e = import ./tests/docker-e2e.nix (checkArgsWithDocker noopScript);
         };
       };
     };

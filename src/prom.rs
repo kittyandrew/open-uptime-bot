@@ -1,25 +1,58 @@
 use lazy_static::lazy_static;
-use prometheus::{self, Encoder, HistogramVec, IntCounter, IntCounterVec, TextEncoder};
+use prometheus::{self, Encoder, GaugeVec, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, TextEncoder};
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::{Data, Request, Response, State};
 use std::time::Instant;
 
 lazy_static! {
+    // Request-level metrics
     pub static ref TOTAL_REQUESTS_SERVED: IntCounter = prometheus::register_int_counter!(
-        "total_requests_served",
+        "oubot_requests_total",
         "Total number of requests served (including rejected)"
     )
     .unwrap();
     pub static ref ENDPOINTS_REQUESTS_SERVED: IntCounterVec = prometheus::register_int_counter_vec!(
-        "endpoints_requests_served",
+        "oubot_endpoint_requests_total",
         "Total number of requests served per endpoint",
         &["method", "endpoint"]
     )
     .unwrap();
     pub static ref ENDPOINT_REQUESTS_DURATION: HistogramVec = prometheus::register_histogram_vec!(
-        "endpoint_requests_duration_seconds",
-        "Endpoint requests handling latencies in in seconds",
+        "oubot_request_duration_seconds",
+        "Endpoint request handling latencies in seconds",
         &["method", "endpoint"]
+    )
+    .unwrap();
+
+    // Domain-level metrics
+    // @NOTE: State encoding: 0=Uninitialized, 1=Up, 2=Down, 3=Paused
+    pub static ref UPTIME_STATE: IntGaugeVec = prometheus::register_int_gauge_vec!(
+        "oubot_uptime_state",
+        "Current uptime state per user (0=uninit, 1=up, 2=down, 3=paused)",
+        &["user_id"]
+    )
+    .unwrap();
+    pub static ref LAST_SEEN_TIMESTAMP: GaugeVec = prometheus::register_gauge_vec!(
+        "oubot_last_seen_timestamp",
+        "Unix timestamp of last heartbeat per user",
+        &["user_id"]
+    )
+    .unwrap();
+    pub static ref AUTH_FAILURES: IntCounterVec = prometheus::register_int_counter_vec!(
+        "oubot_auth_failures_total",
+        "Authentication failures by reason",
+        &["reason"]
+    )
+    .unwrap();
+    pub static ref NOTIFICATIONS: IntCounterVec = prometheus::register_int_counter_vec!(
+        "oubot_notifications_total",
+        "Notifications sent by type and result",
+        &["type", "result"]
+    )
+    .unwrap();
+    pub static ref ACTIVE_USERS: IntGauge = prometheus::register_int_gauge!(
+        "oubot_active_users",
+        "Number of registered users"
     )
     .unwrap();
 }
@@ -75,9 +108,12 @@ impl Fairing for PrometheusCollection {
     }
 }
 
-// Native metrics export support for Prometheus.
+// @WARNING: This endpoint is unauthenticated. User-level metrics (oubot_uptime_state,
+//  oubot_last_seen_timestamp) expose user IDs and device status. In production, block
+//  this path in the reverse proxy so it's only reachable from the internal monitoring
+//  network. See the ntfy pattern in kittyos for reference.
 #[get("/api/v1/metrics")]
-pub async fn get_metrics(encoder: &State<TextEncoder>) -> String {
+pub async fn get_metrics(_rl: crate::bauth::RateLimitGuard, encoder: &State<TextEncoder>) -> String {
     let mut buffer = Vec::new();
     encoder.encode(&prometheus::gather(), &mut buffer).unwrap();
     return String::from_utf8(buffer).unwrap();

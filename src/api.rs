@@ -1,13 +1,19 @@
 use crate::actions::{self, NewInvite, NewUser};
-use crate::{DB, bauth, context::Context, db};
+use crate::{DB, bauth, context::Context, db, prom};
 use rocket::State;
 use rocket::serde::json::{Json, Value, json};
 use rocket_db_pools::Connection;
 
 #[post("/api/v1/users", data = "<opts>")]
-pub async fn create_user(opts: Json<NewUser>, mut conn: Connection<DB>, context: &State<Context>) -> Value {
+pub async fn create_user(_rl: bauth::RateLimitGuard, opts: Json<NewUser>, mut conn: Connection<DB>, context: &State<Context>) -> Value {
     match actions::create_user(&opts, &mut conn, context).await {
-        Ok(state) => json!({"status": 200, "state": state}),
+        Ok(state) => {
+            let uid_str = state.user.id.to_string();
+            prom::ACTIVE_USERS.inc();
+            prom::UPTIME_STATE.with_label_values(&[&uid_str]).set(i64::from(&state.uptime.status));
+            prom::LAST_SEEN_TIMESTAMP.with_label_values(&[&uid_str]).set(0.0);
+            json!({"status": 200, "state": state})
+        }
         Err(err) => json!({"status": 400, "error": err}),
     }
 }
@@ -79,6 +85,11 @@ pub async fn delete_user(
         Ok(deleted) if deleted > 0 => {
             context.remove_user(user_id).await;
             context.remove_invite_ids(&invite_ids).await;
+            // Clean up per-user metrics
+            let uid_str = user_id.to_string();
+            let _ = prom::UPTIME_STATE.remove_label_values(&[&uid_str]);
+            let _ = prom::LAST_SEEN_TIMESTAMP.remove_label_values(&[&uid_str]);
+            prom::ACTIVE_USERS.dec();
             // Clean up ntfy.sh server user
             if let Some(username) = ntfy_username {
                 if let Err(err) = context.ntfy.delete_user(&username).await {

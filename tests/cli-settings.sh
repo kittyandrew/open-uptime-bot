@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-SERVER="http://0.0.0.0:8000"
+SERVER="${OUBOT_BASE_URL:?OUBOT_BASE_URL must be set}"
 
 echo "============================================================"
 echo "CLI Settings Test"

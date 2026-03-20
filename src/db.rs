@@ -72,7 +72,7 @@ impl User {
         ntfy: &NtfyUser,
     ) -> User {
         let rng = rand::thread_rng();
-        let secret_part: String = rng.sample_iter(&Alphanumeric).take(32).map(char::from).collect();
+        let secret_part: String = rng.sample_iter(&Alphanumeric).take(16).map(char::from).collect();
         User {
             id: Uuid::new_v4(),
             user_type,
@@ -106,6 +106,18 @@ pub enum UpStatus {
     Up,
     Down,
     Paused,
+}
+
+// @NOTE: Prometheus metric encoding for oubot_uptime_state gauge.
+impl From<&UpStatus> for i64 {
+    fn from(s: &UpStatus) -> i64 {
+        match s {
+            UpStatus::Uninitialized => 0,
+            UpStatus::Up => 1,
+            UpStatus::Down => 2,
+            UpStatus::Paused => 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Queryable, Selectable, Insertable)]
@@ -406,7 +418,7 @@ pub async fn regenerate_user_token(
     user_id: ID,
 ) -> Result<String, diesel::result::Error> {
     let rng = rand::thread_rng();
-    let secret_part: String = rng.sample_iter(&Alphanumeric).take(32).map(char::from).collect();
+    let secret_part: String = rng.sample_iter(&Alphanumeric).take(16).map(char::from).collect();
     let new_token = format!("tk_{secret_part}");
 
     diesel::update(users::dsl::users.filter(users::dsl::id.eq(user_id)))

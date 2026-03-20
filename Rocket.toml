@@ -1,3 +1,8 @@
 [global]
 port = 8080
 address = "0.0.0.0"
+# @WARNING: X-Forwarded-For is client-spoofable. The reverse proxy MUST strip or
+#  overwrite client-supplied X-Forwarded-For headers before adding the real client IP.
+#  Caddy does this correctly by default. Without a trusted proxy, an attacker can
+#  rotate fake IPs to bypass both IP rate limiting and fail2ban.
+ip_header = "X-Forwarded-For"

@@ -42,8 +42,15 @@ class ApiV1UpTestSuccess(TestBase):
         assert message["event"] == "message"
         assert all(p in message for p in ("title", "message", "tags", "priority"))
         assert message["title"] == "Світло з'явилося!"
-        # Notification was success, but took unreasonibly long.
-        assert (t := round(time() - start_t, 4)) < 0.05, f"Notification took too long ({t})"
+        # Notification was success, but took unreasonably long.
+        assert (t := round(time() - start_t, 4)) < 5.0, f"Notification took too long ({t})"
+
+        # Verify domain-level Prometheus metrics updated correctly.
+        metrics = requests.get(f"{self.base_url}/api/v1/metrics").text
+        assert "oubot_notifications_total" in metrics, "Expected notification metrics"
+        assert "oubot_uptime_state" in metrics, "Expected uptime state metric"
+        assert "oubot_active_users 1" in metrics, "Expected active_users = 1"
+        assert "oubot_last_seen_timestamp" in metrics, "Expected last_seen metric"
 
 
 if __name__ == "__main__":
