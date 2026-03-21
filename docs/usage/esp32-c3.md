@@ -1,6 +1,6 @@
-# Open Uptime Bot — Usage Guide
+# ESP32-C3 Client — Usage Guide
 
-Guide for invite token holders setting up an uptime monitoring device.
+Guide for invite token holders setting up an ESP32-C3 uptime monitoring device.
 
 ## Prerequisites
 
@@ -80,7 +80,7 @@ OUBOT_WIFI_SSID="YourWiFiName" \
 OUBOT_WIFI_PASS="YourWiFiPassword" \
 OUBOT_SERVER="https://oubot.example.com" \
 OUBOT_TOKEN="tk_your_access_token" \
-nix develop -c cargo run
+nix develop -c cargo run --release
 ```
 
 This builds, flashes, and opens the serial monitor in one step.
@@ -103,27 +103,7 @@ The uptime state should show as "up". Unplug the device for 30+ seconds and you'
 | Solid on | Error state (bad status or connection failure), retrying with backoff |
 | Off | Idle / sleeping between heartbeats |
 
-## 6. Managing Your Account
-
-```bash
-# View your info and uptime status:
-nix develop -c oubot-cli me
-
-# Change notification language (uk/en):
-nix develop -c oubot-cli language en
-
-# View ntfy notification settings:
-nix develop -c oubot-cli ntfy show
-
-# Enable/disable ntfy notifications:
-nix develop -c oubot-cli ntfy enable
-nix develop -c oubot-cli ntfy disable
-
-# Regenerate access token (requires re-flashing the device):
-nix develop -c oubot-cli token regenerate
-```
-
-## 7. Token Regeneration
+## 6. Token Regeneration
 
 If you regenerate your access token, the device will start getting 401 errors. Rebuild and re-flash with the new token (from the repository root):
 
@@ -137,7 +117,7 @@ nix build .#esp32-client --impure
 nix develop -c espflash flash --monitor result/bin/esp32-uptime-client
 ```
 
-## 8. Troubleshooting
+## 7. Troubleshooting
 
 **WiFi won't connect:**
 - Verify the SSID is a 2.4GHz network (ESP32-C3 doesn't support 5GHz)

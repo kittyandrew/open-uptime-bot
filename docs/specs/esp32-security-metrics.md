@@ -6,15 +6,15 @@ Spec for three phases of work: server-side security + observability, ESP32 Rust 
 
 ### Current State
 - Server: Rust/Rocket, PostgreSQL, ntfy.sh notifications, Docker deployment on NixOS (tustan)
-- Client: Pico W running MicroPython (`clients/pico-w/blink.py`), HTTP/1.0 GET every ~5s, new TLS handshake per request
+- Clients: ESP32-C3 and Pico W, both Rust no_std firmware, GET every ~5s with persistent TLS connections
 - Auth: Bearer token (`Authorization: token tk_...`), IP-based rate limit (5 req/sec via governor fairing), auth failure logging for fail2ban
 - Monitoring: Prometheus metrics (`oubot_` prefix) — request-level (total, per-endpoint, latency) + domain-level (uptime state, last seen, auth failures, notifications, active users)
 - Testing: 7 NixOS integration tests (Python + bash) + route-guard-lint, including security-auth (fail2ban) and docker-e2e
 - Production: Docker containers on tustan via `meow-containers` module, Caddy reverse proxy, fail2ban for SSH + mailu + oubot
 
 ### Known Vulnerabilities
-- **TLS CERT_NONE**: Pico W client disables certificate verification (`blink.py:40`), making it vulnerable to MITM token capture. Deferred to Phase 3 (Rust rewrite with proper TLS).
-- **Unauthenticated metrics**: `/api/v1/metrics` is publicly accessible. Currently harmless (only request counters). Becomes a concern when user-level metrics are added (Phase 1.3). Production mitigation: block the path in Caddy so it's only reachable from the internal monitoring network.
+- **No TLS cert verification**: Both clients use `TlsVerify::None` — encrypted but server identity is not validated (MITM risk). Blocked on embedded-tls adding no_std certificate support.
+- **Unauthenticated metrics**: `/api/v1/metrics` is publicly accessible. Exposes user_id labels in `oubot_uptime_state` and `oubot_last_seen_timestamp`. Production mitigation: block the path in Caddy so it's only reachable from the internal monitoring network.
 
 ### Production Infrastructure (kittyos/tustan)
 - **Reverse proxy**: Caddy on `caddynet`, vhost `oubot.kittyandrew.dev` -> `open-uptime-bot:8080`
@@ -189,12 +189,12 @@ Token/WiFi changes require rebuilding + re-flashing. This is acceptable for the 
 
 #### Client behavior
 1. Connect to WiFi (retry with backoff on failure)
-2. Establish persistent HTTPS connection to server (TLS encrypted, no cert verification — `TlsVerify::None`; reqwless 0.14+ adds `TlsVerify::Certificate` but requires embassy-net ecosystem upgrade)
+2. Establish persistent HTTPS connection to server (TLS encrypted, no cert verification — `TlsVerify::None`; blocked on embedded-tls adding no_std certificate chain support)
 3. Send `GET /api/v1/up` with `Authorization: token <TOKEN>` every ~5 seconds
 4. On connection drop: reconnect (WiFi first, then HTTPS)
 5. LED feedback: blink on ping, solid on error, off during sleep
 
-Key improvement over Pico W: persistent HTTPS connection via `reqwless::HttpResource` eliminates per-ping TLS handshake overhead. Single handshake at connect; heartbeats reuse the session. On connection drop, reconnects with fresh TLS.
+Both clients use persistent HTTPS connections via `reqwless::HttpResource` — single TLS handshake at connect, heartbeats reuse the session. On connection drop, reconnects with fresh TLS.
 
 ### 2.4 Nix Build Integration
 
@@ -214,24 +214,29 @@ End-user guide for invite token holders. Written after the ESP32 client implemen
 
 ---
 
-## Phase 3: Pico W Migration to Rust
+## Phase 3: Pico W Migration to Rust (Completed)
 
 ### 3.1 Scope
 
-Rewrite `clients/pico-w/blink.py` in Rust using `embassy-rp` + `cyw43` (WiFi driver). Fixes the TLS CERT_NONE vulnerability. The Pico W (RP2040, 264KB RAM) is more constrained than ESP32 but has good Rust support.
+Rewrote MicroPython client in Rust using `embassy-rp` + `cyw43` (WiFi driver). The Pico W (RP2040, 264KB RAM) is more constrained than ESP32 but has good Rust support.
 
 ### 3.2 Approach
 
 - Share patterns with the ESP32 client (HTTP logic, retry patterns, `env!()` config)
-- Proper TLS certificate validation (fixes the CERT_NONE gap)
 - Compile-time configuration via same pattern
 - Add to `flake.nix` as `packages.pico-w-client`
-- Update USAGE.md with Pico W instructions
-- Keep MicroPython client as reference (don't delete yet)
+- Usage docs at `docs/usage/pico-w.md`
+- MicroPython client deleted (replaced by Rust client)
 
-### 3.3 Dependency
+### 3.3 Implementation Notes
 
-Depends on Phase 2. Same patterns apply (different HAL, same application logic). If Phase 2 reveals issues with esp-hal, Phase 3 adjusts accordingly.
+- embassy-rp 0.10 + cyw43 0.7 + cyw43-pio 0.10 + reqwless 0.14
+- CYW43439 firmware blobs loaded on every boot (~231KB, no flash on WiFi chip)
+- LED controlled via cyw43 GPIO0 (active-high, unlike ESP32's active-low GPIO8)
+- defmt/RTT logging instead of esp-println (different logging framework)
+- `cortex-m-rt` linker needs `memory.x` — crane deps build uses `cargo check` to avoid linking the dummy binary
+- TLS CERT_NONE gap: embedded-tls 0.18 still doesn't support cert verification in no_std; same limitation as ESP32 client
+- `embedded-tls` 0.18 has a bug: missing `der/heapless` feature declaration; worked around with direct `der` dependency
 
 ---
 
@@ -244,7 +249,7 @@ Depends on Phase 2. Same patterns apply (different HAL, same application logic).
 5. **fail2ban test**: Two-node NixOS test (separate client/server VMs).
 6. **Client testing**: No separate test client binary. Docker E2E test validates the production artifact instead.
 7. **ESP32 config**: Compile-time bake everything via `env!()`. WiFi AP provisioning is a future enhancement.
-8. **TLS gap**: Noted in spec, deferred to Phase 3 (Pico W Rust rewrite).
+8. **TLS gap**: Accepted limitation — embedded-tls lacks no_std cert verification. Both clients use `TlsVerify::None`.
 9. **Phase 3**: Committed, not conditional.
 10. **fail2ban regex**: Starting point provided, must be verified against actual journald output during implementation.
 11. **Protocol**: Keep HTTP GET. Efficiency win from persistent connections in Rust client.

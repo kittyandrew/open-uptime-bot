@@ -109,38 +109,15 @@ Save the user's access token — this is what goes on the client device.
 
 ## 7. Configure and flash the client device
 
-### ESP32-C3 (Rust)
+### ESP32-C3
 
-See [USAGE.md](USAGE.md) for the full ESP32 setup guide (build, flash, verify).
+See [usage/esp32-c3.md](usage/esp32-c3.md) for the full ESP32-C3 setup guide (build, flash, verify).
 
-### Pico W (MicroPython)
+### Pico W
 
-The client firmware is in `clients/pico-w/blink.py`. Edit it with your configuration:
+See [usage/pico-w.md](usage/pico-w.md) for the full Pico W setup guide (build, flash, verify).
 
-```python
-host = "your-server-domain.com"    # Your server's hostname
-token = "token tk_abc123..."       # The user's access token (with "token " prefix)
-ssid = "your-wifi-name"            # 2.4 GHz WiFi network name
-password = "your-wifi-password"    # WiFi password
-```
-
-Flash the device:
-
-```bash
-# 1. Plug Pico W in with BOOTSEL button held down
-# 2. Flash MicroPython firmware
-sudo picotool load clients/pico-w/RPI_PICO_W-20241025-v1.24.0.uf2
-
-# 3. Unplug and replug WITHOUT holding the button
-
-# 4. Deploy the script to the device
-sudo rshell -p /dev/ttyACM0 --buffer-size 512 \
-  cp clients/pico-w/blink.py /pyboard/main.py
-
-# 5. Unplug and replug — the device starts pinging automatically
-```
-
-The device will connect to WiFi and ping `GET /api/v1/up` every ~5 seconds. If pings stop for longer than the user's `up_delay` (default 30s), the server sends a "power off" notification via ntfy.sh. When pings resume, it sends a "power on" notification with the duration of the outage.
+Both clients use compile-time configuration via environment variables and `nix build --impure`. The device connects to WiFi and pings `GET /api/v1/up` every ~5 seconds. If pings stop for longer than the user's `up_delay` (default 30s), the server sends a "power off" notification via ntfy.sh. When pings resume, it sends a "power on" notification with the duration of the outage.
 
 ## 8. Manage notifications
 

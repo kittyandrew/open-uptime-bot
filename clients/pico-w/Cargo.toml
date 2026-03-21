@@ -1,0 +1,33 @@
+[package]
+name = "pico-w-uptime-client"
+version = "2026.3.21"
+edition = "2024"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+cyw43 = { version = "0.7", features = ["defmt"] }
+cyw43-pio = "0.10"
+defmt = "1.0"
+defmt-rtt = "0.4"
+# @NOTE: Workaround — embedded-tls 0.18 uses der's SequenceOf/SetOf (gated behind
+# the `heapless` feature) but doesn't declare it. Adding der directly with the feature
+# fixes the missing import. Remove when embedded-tls fixes its Cargo.toml.
+der = { version = "0.8.0-rc.2", features = ["heapless"] }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+embassy-net = { version = "0.9", features = ["dhcpv4", "dns", "medium-ethernet", "tcp"] }
+embassy-rp = { version = "0.10", features = ["rp2040", "defmt", "time-driver", "critical-section-impl"] }
+embassy-time = "0.5"
+heapless = "0.8"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+portable-atomic = { version = "1", features = ["critical-section"] }
+reqwless = { version = "0.14", default-features = false, features = ["embedded-tls", "defmt"] }
+static_cell = "2.1"
+
+[profile.dev]
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "s"

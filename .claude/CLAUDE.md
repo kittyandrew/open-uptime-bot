@@ -9,7 +9,7 @@ Open Uptime Bot is a Rust backend for uptime monitoring with Ntfy.sh push notifi
 ## Build Commands
 
 ```bash
-# Development environment (all tools: Rust, Diesel CLI, Python, Pico SDK)
+# Development environment (Rust, Diesel CLI, espflash, picotool)
 nix develop
 
 # Run tests
@@ -134,10 +134,13 @@ Server config in `Rocket.toml` (port 8080, `ip_header = "X-Forwarded-For"` for r
 
 `clients/esp32/` — Rust no_std firmware (esp-hal 1.0.0 + esp-rtos + reqwless). Sends `GET /api/v1/up` heartbeats every 5s with bearer auth. WiFi reconnect, exponential backoff, LED feedback. Board: ESP32-C3 (RISC-V), GPIO8 LED (active-low).
 
-Build/flash workflow: see `docs/USAGE.md`. Nix build: `nix build .#esp32-client --impure` (requires all 4 `OUBOT_*` env vars). DevShell uses `build-std` (nightly); Nix build uses fenix pre-built `rust-std` instead.
+Build/flash: see `docs/usage/esp32-c3.md`. Nix build: `nix build .#esp32-client --impure` (requires all 4 `OUBOT_*` env vars). DevShell uses `build-std` (nightly); Nix build uses fenix pre-built `rust-std` instead.
 
 See `docs/specs/esp32-security-metrics.md` for the full design spec. See `docs/SETUP.md` for server deployment.
 
 ## Pico W Client
 
-`clients/pico-w/blink.py` - MicroPython firmware that periodically pings the server's `/api/v1/up` endpoint.
+`clients/pico-w/` — Rust no_std firmware (embassy-rp 0.10 + cyw43 0.7 + reqwless 0.14). Same heartbeat/backoff/halt patterns as the ESP32 client. Board: Pico W (RP2040 Cortex-M0+), LED on CYW43439 WiFi chip (active-high).
+
+Build/flash: see `docs/usage/pico-w.md`. Nix build: `nix build .#pico-w-client --impure` (requires all 4 `OUBOT_*` env vars). DevShell uses `build-std` (nightly); Nix build uses fenix pre-built `rust-std` instead. CYW43 firmware blobs (~231KB) in `clients/pico-w/firmware/` (Cypress Permissive Binary License).
+

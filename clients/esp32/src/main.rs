@@ -149,6 +149,9 @@ async fn main(spawner: Spawner) -> ! {
     // Persistent connection heartbeat loop.
     // Outer loop: (re)establishes the TCP+TLS connection.
     // Inner loop: sends heartbeats on the persistent connection.
+    // @NOTE: WiFi reconnect is handled by the connection() task — it monitors
+    // StaDisconnected events and auto-reconnects. Unlike the Pico W client,
+    // no explicit is_link_up() check is needed here.
     let mut failures: u32 = 0;
     let mut auth_failures: u32 = 0;
     loop {
@@ -159,9 +162,8 @@ async fn main(spawner: Spawner) -> ! {
         let tcp = TcpClient::new(stack, &tcp_state);
 
         // @WARNING: No TLS certificate verification — encrypted but server identity is
-        // not validated (MITM risk). embedded-tls 0.17 supports CA certs but reqwless 0.13
-        // doesn't expose that. reqwless 0.14+ adds TlsVerify::Certificate, but requires an
-        // embassy-net ecosystem upgrade. Same limitation as the Pico W client (CERT_NONE).
+        // not validated (MITM risk). embedded-tls doesn't support cert verification in
+        // no_std environments. Same limitation on the Pico W client (TlsVerify::None).
         let tls_seed = (rng.random() as u64) << 32 | rng.random() as u64;
         let tls = TlsConfig::new(tls_seed, &mut tls_rx, &mut tls_tx, TlsVerify::None);
         let mut client = HttpClient::new_with_tls(&tcp, &dns, tls);
