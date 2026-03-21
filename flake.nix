@@ -65,7 +65,7 @@
 
     docker-image = pkgs.dockerTools.buildImage {
       name = "open-uptime-bot";
-      tag = "2026.3.20";
+      tag = "2026.3.21";
       fromImage = pkgs.dockerTools.pullImage {
         imageName = "alpine";
         imageDigest = "sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659";

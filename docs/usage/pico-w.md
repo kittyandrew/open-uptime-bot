@@ -128,7 +128,17 @@ nix build .#pico-w-client --impure
 nix develop -c picotool load -x result/bin/pico-w-uptime-client -t elf
 ```
 
-## 7. Troubleshooting
+## 7. Erase Device
+
+To wipe the Pico W before giving it to someone else (removes compiled-in WiFi credentials and access token):
+
+```bash
+nix develop -c picotool erase -a -f
+```
+
+The device will be blank — it needs new firmware flashed to function again.
+
+## 8. Troubleshooting
 
 **WiFi won't connect:**
 - Verify the SSID is a 2.4GHz network (CYW43439 doesn't support 5GHz)

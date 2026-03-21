@@ -117,7 +117,17 @@ nix build .#esp32-client --impure
 nix develop -c espflash flash --monitor result/bin/esp32-uptime-client
 ```
 
-## 7. Troubleshooting
+## 7. Erase Device
+
+To wipe the ESP32-C3 before giving it to someone else (removes compiled-in WiFi credentials and access token):
+
+```bash
+nix develop -c espflash erase-flash
+```
+
+This erases the entire flash. The device will be blank — it needs new firmware flashed to function again.
+
+## 8. Troubleshooting
 
 **WiFi won't connect:**
 - Verify the SSID is a 2.4GHz network (ESP32-C3 doesn't support 5GHz)

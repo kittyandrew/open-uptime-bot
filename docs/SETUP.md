@@ -119,12 +119,24 @@ See [usage/pico-w.md](usage/pico-w.md) for the full Pico W setup guide (build, f
 
 Both clients use compile-time configuration via environment variables and `nix build --impure`. The device connects to WiFi and pings `GET /api/v1/up` every ~5 seconds. If pings stop for longer than the user's `up_delay` (default 30s), the server sends a "power off" notification via ntfy.sh. When pings resume, it sends a "power on" notification with the duration of the outage.
 
-## 8. Manage notifications
+## 8. Subscribe to notifications on your phone
+
+Each user gets an auto-generated ntfy topic and credentials. To receive notifications on your phone:
+
+1. Install the [ntfy app](https://ntfy.sh) (Android: Play Store / F-Droid, iOS: App Store)
+2. In the app, add your self-hosted ntfy server (Settings → manage users/server URL)
+3. Get your ntfy credentials:
+   ```bash
+   nix develop -c oubot-cli ntfy show
+   # Shows: Enabled, Topic, Username, Password
+   ```
+4. Subscribe to the topic shown by the command above, using the displayed username and password for authentication
+
+Notifications will appear on your phone when the device goes down or comes back up.
+
+## 9. Manage notifications
 
 ```bash
-# Check ntfy settings
-nix develop -c oubot-cli ntfy show
-
 # Disable/enable notifications
 nix develop -c oubot-cli ntfy disable
 nix develop -c oubot-cli ntfy enable
@@ -133,7 +145,7 @@ nix develop -c oubot-cli ntfy enable
 nix develop -c oubot-cli language en
 ```
 
-## 9. Regenerate tokens
+## 10. Regenerate tokens
 
 If a token is compromised:
 
