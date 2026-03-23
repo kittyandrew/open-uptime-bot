@@ -1,109 +1,30 @@
-use crate::actions::{self, NewInvite, NewUser};
+use crate::actions::{self, NewUser};
 use crate::{DB, bauth, context::Context, db, prom};
 use rocket::State;
 use rocket::serde::json::{Json, Value, json};
 use rocket_db_pools::Connection;
 
+/// Create a new user (first admin needs no invite; subsequent users need invite token)
 #[post("/api/v1/users", data = "<opts>")]
-pub async fn create_user(_rl: bauth::RateLimitGuard, opts: Json<NewUser>, mut conn: Connection<DB>, context: &State<Context>) -> Value {
+pub async fn create_user(
+    _rl: bauth::RateLimitGuard,
+    opts: Json<NewUser>,
+    mut conn: Connection<DB>,
+    context: &State<Context>,
+) -> Value {
     match actions::create_user(&opts, &mut conn, context).await {
         Ok(state) => {
             let uid_str = state.user.id.to_string();
             prom::ACTIVE_USERS.inc();
-            prom::UPTIME_STATE.with_label_values(&[&uid_str]).set(i64::from(&state.uptime.status));
+            prom::UPTIME_STATE
+                .with_label_values(&[&uid_str])
+                .set(i64::from(&state.uptime.status));
             prom::LAST_SEEN_TIMESTAMP.with_label_values(&[&uid_str]).set(0.0);
             json!({"status": 200, "state": state})
         }
         Err(err) => json!({"status": 400, "error": err}),
     }
 }
-
-/// Create a new invite (admin only)
-#[post("/api/v1/invites")]
-pub async fn create_invite(admin: bauth::AdminAuth, mut conn: Connection<DB>, context: &State<Context>) -> Value {
-    let opts = NewInvite { owner_id: admin.uid };
-    match actions::create_invite(&opts, &mut conn, context).await {
-        Ok(invite) => json!({"status": 200, "invite": invite}),
-        Err(err) => json!({"status": 400, "error": err}),
-    }
-}
-
-/// List all invites (admin only)
-#[get("/api/v1/invites")]
-pub async fn list_invites(admin: bauth::AdminAuth, mut conn: Connection<DB>) -> Value {
-    match db::get_invites_for_user(&mut conn, admin.uid).await {
-        Ok(invites) => json!({"status": 200, "invites": invites}),
-        Err(err) => json!({"status": 500, "error": format!("{err:?}")}),
-    }
-}
-
-/// Delete an invite (admin only)
-#[delete("/api/v1/invites/<invite_id>")]
-pub async fn delete_invite(
-    admin: bauth::AdminAuth,
-    invite_id: uuid::Uuid,
-    mut conn: Connection<DB>,
-    context: &State<Context>,
-) -> Value {
-    match db::delete_invite(&mut conn, invite_id, admin.uid).await {
-        Ok(deleted) if deleted > 0 => {
-            let was_unused = context.remove_invite(invite_id).await;
-            if was_unused {
-                if let Some(state) = context.users.write().await.get_mut(&admin.uid) {
-                    state.user.invites_used -= 1;
-                }
-            }
-            json!({"status": 200, "message": "Invite deleted"})
-        }
-        Ok(_) => json!({"status": 404, "error": "Invite not found or not owned by you"}),
-        Err(err) => json!({"status": 500, "error": format!("{err:?}")}),
-    }
-}
-
-/// Delete a user (admin only)
-#[delete("/api/v1/admin/users/<user_id>")]
-pub async fn delete_user(
-    admin: bauth::AdminAuth,
-    user_id: uuid::Uuid,
-    mut conn: Connection<DB>,
-    context: &State<Context>,
-) -> Value {
-    if admin.uid == user_id {
-        return json!({"status": 400, "error": "Cannot delete yourself"});
-    }
-    // Collect data needed for cleanup before deletion (DB will cascade-delete invites)
-    let invite_ids: Vec<uuid::Uuid> = match db::get_invites_for_user(&mut conn, user_id).await {
-        Ok(invites) => invites.iter().filter(|i| !i.is_used).map(|i| i.id).collect(),
-        Err(err) => {
-            warn!("Failed to load invites for user {user_id} during deletion: {err:?}");
-            vec![]
-        }
-    };
-    let ntfy_username = context.users.read().await
-        .get(&user_id).map(|s| s.ntfy.username.clone());
-    match db::delete_user(&mut conn, user_id).await {
-        Ok(deleted) if deleted > 0 => {
-            context.remove_user(user_id).await;
-            context.remove_invite_ids(&invite_ids).await;
-            // Clean up per-user metrics
-            let uid_str = user_id.to_string();
-            let _ = prom::UPTIME_STATE.remove_label_values(&[&uid_str]);
-            let _ = prom::LAST_SEEN_TIMESTAMP.remove_label_values(&[&uid_str]);
-            prom::ACTIVE_USERS.dec();
-            // Clean up ntfy.sh server user
-            if let Some(username) = ntfy_username {
-                if let Err(err) = context.ntfy.delete_user(&username).await {
-                    warn!("Failed to delete ntfy user '{username}': {err:?}");
-                }
-            }
-            json!({"status": 200, "message": "User deleted"})
-        }
-        Ok(_) => json!({"status": 404, "error": "User not found"}),
-        Err(err) => json!({"status": 500, "error": format!("{err:?}")}),
-    }
-}
-
-// User self-service endpoints
 
 /// Get current authenticated user info
 #[get("/api/v1/me")]
@@ -116,11 +37,7 @@ pub async fn get_me(bauth: bauth::BAuth, context: &State<Context>) -> Value {
 
 /// Regenerate access token (for Pico W client)
 #[post("/api/v1/me/regenerate-token")]
-pub async fn regenerate_token(
-    bauth: bauth::BAuth,
-    mut conn: Connection<DB>,
-    context: &State<Context>,
-) -> Value {
+pub async fn regenerate_token(bauth: bauth::BAuth, mut conn: Connection<DB>, context: &State<Context>) -> Value {
     match db::regenerate_user_token(&mut conn, bauth.uid).await {
         Ok(new_token) => {
             // Update in-memory state
@@ -142,7 +59,7 @@ pub async fn regenerate_token(
             }
             json!({"status": 200, "access_token": new_token})
         }
-        Err(e) => json!({"status": 500, "error": format!("{:?}", e)}),
+        Err(err) => json!({"status": 500, "error": format!("{err:?}")}),
     }
 }
 
@@ -190,7 +107,7 @@ pub async fn update_ntfy_settings(
             }
             json!({"status": 200, "enabled": opts.enabled})
         }
-        Err(e) => json!({"status": 500, "error": format!("{:?}", e)}),
+        Err(err) => json!({"status": 500, "error": format!("{err:?}")}),
     }
 }
 
@@ -233,7 +150,7 @@ pub async fn update_language(
             }
             json!({"status": 200, "language_code": lang})
         }
-        Err(e) => json!({"status": 500, "error": format!("{:?}", e)}),
+        Err(err) => json!({"status": 500, "error": format!("{err:?}")}),
     }
 }
 
@@ -243,11 +160,7 @@ pub async fn update_language(
 /// @NOTE: Persists to DB inside the write lock to prevent the race where
 ///  background_handle_down's deferred DB write could overwrite Paused with Down.
 #[post("/api/v1/me/pause")]
-pub async fn pause_monitoring(
-    bauth: bauth::BAuth,
-    mut conn: Connection<DB>,
-    context: &State<Context>,
-) -> Value {
+pub async fn pause_monitoring(bauth: bauth::BAuth, mut conn: Connection<DB>, context: &State<Context>) -> Value {
     let mut guard = context.users.write().await;
     let Some(item) = guard.get_mut(&bauth.uid) else {
         return json!({"status": 404, "error": "User not found"});
@@ -255,7 +168,9 @@ pub async fn pause_monitoring(
     if let Err(err) = item.uptime.pause() {
         return json!({"status": 400, "error": err});
     }
-    prom::UPTIME_STATE.with_label_values(&[&bauth.uid.to_string()]).set(i64::from(&item.uptime.status));
+    prom::UPTIME_STATE
+        .with_label_values(&[&bauth.uid.to_string()])
+        .set(i64::from(&item.uptime.status));
     if let Err(err) = db::update_uptime_state(&mut conn, &item.uptime).await {
         warn!("Failed to persist pause state: {err:?}");
     }
@@ -264,11 +179,7 @@ pub async fn pause_monitoring(
 
 /// Resume monitoring — restores pre-pause state, refreshes touched_at.
 #[post("/api/v1/me/unpause")]
-pub async fn unpause_monitoring(
-    bauth: bauth::BAuth,
-    mut conn: Connection<DB>,
-    context: &State<Context>,
-) -> Value {
+pub async fn unpause_monitoring(bauth: bauth::BAuth, mut conn: Connection<DB>, context: &State<Context>) -> Value {
     let mut guard = context.users.write().await;
     let Some(item) = guard.get_mut(&bauth.uid) else {
         return json!({"status": 404, "error": "User not found"});
@@ -276,7 +187,9 @@ pub async fn unpause_monitoring(
     if let Err(err) = item.uptime.unpause() {
         return json!({"status": 400, "error": err});
     }
-    prom::UPTIME_STATE.with_label_values(&[&bauth.uid.to_string()]).set(i64::from(&item.uptime.status));
+    prom::UPTIME_STATE
+        .with_label_values(&[&bauth.uid.to_string()])
+        .set(i64::from(&item.uptime.status));
     if let Err(err) = db::update_uptime_state(&mut conn, &item.uptime).await {
         warn!("Failed to persist unpause state: {err:?}");
     }
@@ -314,10 +227,10 @@ pub async fn update_settings(
     context: &State<Context>,
 ) -> Value {
     // Validate up_delay
-    if let Some(delay) = opts.up_delay {
-        if delay < 10 || delay > 32767 {
-            return json!({"status": 400, "error": "up_delay must be between 10 and 32767 seconds"});
-        }
+    if let Some(delay) = opts.up_delay
+        && (!(10..=32767).contains(&delay))
+    {
+        return json!({"status": 400, "error": "up_delay must be between 10 and 32767 seconds"});
     }
     // Validate maintenance window: both present or both absent
     let maint_start = opts.maint_window_start_utc;
@@ -326,13 +239,13 @@ pub async fn update_settings(
         return json!({"status": 400, "error": "maint_window_start_utc and maint_window_end_utc must be set together"});
     }
     // Reject mixed null/value (e.g., start=60, end=null) — DB constraint would catch it as 500
-    if let (Some(a), Some(b)) = (maint_start, maint_end) {
-        if a.is_some() != b.is_some() {
-            return json!({"status": 400, "error": "Maintenance window start and end must both be set or both be null"});
-        }
+    if let (Some(a), Some(b)) = (maint_start, maint_end)
+        && a.is_some() != b.is_some()
+    {
+        return json!({"status": 400, "error": "Maintenance window start and end must both be set or both be null"});
     }
     if let (Some(Some(s)), Some(Some(e))) = (maint_start, maint_end) {
-        if s < 0 || s >= 1440 || e < 0 || e >= 1440 {
+        if !(0..1440).contains(&s) || !(0..1440).contains(&e) {
             return json!({"status": 400, "error": "Maintenance window values must be 0-1439 (minutes from midnight UTC)"});
         }
         if s == e {
@@ -364,27 +277,6 @@ pub async fn update_settings(
                 json!({"status": 404, "error": "User not found"})
             }
         }
-        Err(e) => json!({"status": 500, "error": format!("{:?}", e)}),
+        Err(err) => json!({"status": 500, "error": format!("{err:?}")}),
     }
 }
-
-// Admin endpoints
-
-/// List all users (admin only).
-/// @NOTE: Intentionally exposes full user data including access_token and ntfy
-///  credentials — admins have explicit access to manage and impersonate any user.
-#[get("/api/v1/admin/users")]
-pub async fn admin_list_users(_admin: bauth::AdminAuth, context: &State<Context>) -> Value {
-    let users: Vec<db::UserState> = context.users.read().await.values().cloned().collect();
-    json!({"status": 200, "users": users})
-}
-
-/// Get any user by ID (admin only)
-#[get("/api/v1/admin/users/<uid>")]
-pub async fn admin_get_user(_admin: bauth::AdminAuth, uid: uuid::Uuid, context: &State<Context>) -> Value {
-    match context.users.read().await.get(&uid) {
-        Some(state) => json!({"status": 200, "user": state}),
-        None => json!({"status": 404, "error": "User not found"}),
-    }
-}
-

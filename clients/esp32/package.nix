@@ -11,20 +11,23 @@
     OUBOT_TOKEN = builtins.getEnv "OUBOT_TOKEN";
   };
 
-  commonArgs = envVars // {
-    pname = "esp32-uptime-client";
-    version = "2026.3.23";
-    src = ./.;
-    doCheck = false; # Can't run no_std binary on build host.
-    cargoExtraArgs = "--target riscv32imc-unknown-none-elf";
-    # @NOTE: Strip build-std from .cargo/config.toml.
-    # Nix build uses pre-built rust-std from fenix; build-std is only
-    # for devShell where the complete.toolchain has rust-src.
-    postUnpack = ''
-      sed -i '/^\[unstable\]$/d; /^build-std/d' $sourceRoot/.cargo/config.toml
-    '';
-  };
+  commonArgs =
+    envVars
+    // {
+      pname = "esp32-uptime-client";
+      version = "2026.3.23";
+      src = ./.;
+      doCheck = false; # Can't run no_std binary on build host.
+      cargoExtraArgs = "--target riscv32imc-unknown-none-elf";
+      # @NOTE: Strip build-std from .cargo/config.toml.
+      # Nix build uses pre-built rust-std from fenix; build-std is only
+      # for devShell where the complete.toolchain has rust-src.
+      postUnpack = ''
+        sed -i '/^\[unstable\]$/d; /^build-std/d' $sourceRoot/.cargo/config.toml
+      '';
+    };
 in
-  craneLib.buildPackage (commonArgs // {
-    cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-  })
+  craneLib.buildPackage (commonArgs
+    // {
+      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+    })

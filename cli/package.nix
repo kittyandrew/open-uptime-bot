@@ -3,7 +3,10 @@
 #
 # @NOTE: oubot-cli links against OpenSSL dynamically (via reqwest).
 # makeWrapper sets LD_LIBRARY_PATH so libssl.so is found at runtime.
-{craneLib, pkgs}: let
+{
+  craneLib,
+  pkgs,
+}: let
   raw = craneLib.buildPackage {
     src = ./.;
     nativeBuildInputs = [pkgs.pkg-config];

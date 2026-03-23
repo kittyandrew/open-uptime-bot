@@ -1,10 +1,7 @@
 # Shared ntfy bootstrap script fragment for integration tests.
 # Creates admin user, extracts token, adds default tier.
 # After eval, NTFY_ADMIN_TOKEN is set as a shell variable.
-{
-  pkgs,
-  ...
-}: let
+{pkgs, ...}: let
   c = import ./config.nix;
   ntfy = "${pkgs.ntfy-sh}/bin/ntfy";
 in ''

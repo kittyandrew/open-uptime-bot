@@ -12,8 +12,8 @@ Open Uptime Bot is a Rust backend for uptime monitoring with Ntfy.sh push notifi
 # Development environment (Rust, Diesel CLI, espflash, picotool)
 nix develop
 
-# Run tests
-nix flake check -L
+# Run tests (in dev, always redirect to file so agents can review logs)
+nix flake check -L &>/tmp/flake-check.log
 
 # Build Docker image
 nix build .#docker
@@ -36,19 +36,17 @@ source ./setup_local.sh
 
 ### Core Components
 
-- **src/main.rs** - Entry point, launches Rocket server and background tasks
-- **src/api.rs** - REST endpoints (see API section below)
+- **src/main.rs** - Entry point, Rocket server setup, fairings, DB startup load
+- **src/api/** - REST endpoints split into `core.rs` (health, heartbeat), `user.rs` (self-service), `admin.rs` (admin-only)
+- **src/db/** - `mod.rs` has query functions, `models.rs` has Diesel ORM structs/enums (re-exported via `db::`)
+- **src/background.rs** - Background task: monitors uptime states, triggers "down" notifications
+- **src/notifications.rs** - Ntfy dispatch, duration formatting, i18n (locales), `utc_minute_of_day`
 - **src/context.rs** - In-memory state (`Context`) with `RwLock<HashMap>` for users, tokens, uptime states
 - **src/bauth.rs** - Bearer token authentication (`Authorization: token <token>`), IP-based rate limiting (5 req/sec fairing), auth failure logging for fail2ban
-- **src/db.rs** - Diesel ORM models and queries
-- **src/ntfy.rs** - Ntfy.sh notification integration
+- **src/ntfy.rs** - Ntfy.sh HTTP client and user management
 - **src/prom.rs** - Prometheus metrics collection
 - **src/actions.rs** - Business logic for user/invite creation
-- **cli/src/main.rs** - CLI tool (`oubot-cli`) for server management
-
-### Background Tasks (spawned in main.rs)
-
-1. **background_handle_down** - Monitors uptime states, triggers "down" notifications after timeout
+- **cli/src/main.rs** - CLI dispatch; `commands.rs` (clap enums), `client.rs` (HTTP), `format.rs` (output formatting)
 
 ### State Management
 
@@ -115,6 +113,14 @@ Test infrastructure in `tests/lib/`:
 - **lib.nix** - Test runner (builds Python/bash test scripts, passes args to NixOS test)
 
 Native tests import `primary.nix` (full stack). Docker E2E imports `infra.nix` directly (runs oubot via Docker container instead of systemd).
+
+### CI Checks (also in `flake.nix`)
+
+All linting runs via `nix flake check` — no separate lint workflow:
+- **fmt** - `cargo fmt --check` (all 4 crates) + `alejandra` (Nix) + `black`/`isort` (Python)
+- **clippy** / **clippy-cli** - `cargo clippy -- -D warnings` (server / CLI, crane-cached deps)
+- **lint** - `shellcheck` + `flake8` + `deadnix` + route-guard-lint (rate-limit guard on every handler)
+- **build-esp32** / **build-pico-w** - Cross-compilation build verification (dummy env vars)
 
 ## Configuration
 

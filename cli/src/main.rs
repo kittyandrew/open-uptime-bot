@@ -1,5 +1,11 @@
-use clap::{Parser, Subcommand};
-use serde_json::Value;
+mod client;
+mod commands;
+mod format;
+
+use clap::Parser;
+use client::Client;
+use commands::*;
+use format::*;
 
 #[derive(Parser)]
 #[command(name = "oubot-cli")]
@@ -21,399 +27,10 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Initialize first admin user (no token required) or create a new user with invite
-    Init {
-        /// Invite token (required for non-first users)
-        #[arg(long)]
-        invite: Option<String>,
-        /// Language code
-        #[arg(long, default_value = "uk")]
-        language: String,
-        /// Number of invites the admin can create (admin only)
-        #[arg(long, default_value = "10")]
-        invites: i64,
-    },
-
-    /// Show current user info
-    Me,
-
-    /// Manage client token (for Pico W or similar devices)
-    #[command(subcommand)]
-    Token(TokenCommands),
-
-    /// Manage ntfy.sh notification settings
-    #[command(subcommand)]
-    Ntfy(NtfyCommands),
-
-    /// Set notification language (e.g., "uk", "en")
-    Language {
-        /// Language code (e.g., "uk" for Ukrainian, "en" for English)
-        code: String,
-    },
-
-    /// Pause monitoring (freeze state, suppress notifications)
-    Pause,
-
-    /// Resume monitoring (restore pre-pause state)
-    Unpause,
-
-    /// Manage monitoring settings (up_delay, maintenance window)
-    #[command(subcommand)]
-    Settings(SettingsCommands),
-
-    /// Admin commands (requires admin privileges)
-    #[command(subcommand)]
-    Admin(AdminCommands),
-}
-
-#[derive(Subcommand)]
-enum SettingsCommands {
-    /// Show current settings
-    Show,
-    /// Set heartbeat timeout (seconds before device is considered down)
-    Delay {
-        /// Timeout in seconds (minimum 10)
-        seconds: i16,
-    },
-    /// Set or clear daily maintenance window (times in HH:MM UTC)
-    Maintenance {
-        /// Start time in HH:MM UTC (omit both times to clear)
-        start: Option<String>,
-        /// End time in HH:MM UTC
-        end: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum TokenCommands {
-    /// Show current access token
-    Show,
-    /// Regenerate access token (WARNING: invalidates current token on all devices)
-    Regenerate,
-}
-
-#[derive(Subcommand)]
-enum NtfyCommands {
-    /// Show ntfy.sh notification settings
-    Show,
-    /// Enable ntfy.sh notifications
-    Enable,
-    /// Disable ntfy.sh notifications
-    Disable,
-}
-
-#[derive(Subcommand)]
-enum AdminCommands {
-    /// List all users
-    Users,
-    /// Get a specific user
-    User {
-        /// User ID
-        id: String,
-    },
-    /// List your invites
-    Invites,
-    /// Create a new invite
-    CreateInvite,
-    /// Delete an invite
-    DeleteInvite {
-        /// Invite ID
-        id: String,
-    },
-    /// Delete a user
-    DeleteUser {
-        /// User ID
-        id: String,
-    },
-}
-
-struct Client {
-    http: reqwest::blocking::Client,
-    server: String,
-    token: Option<String>,
-}
-
-impl Client {
-    fn new(server: String, token: Option<String>) -> Self {
-        Self {
-            http: reqwest::blocking::Client::new(),
-            server,
-            token,
-        }
-    }
-
-    fn parse_response(resp: reqwest::blocking::Response) -> Result<Value, String> {
-        let status = resp.status();
-
-        // Handle common HTTP errors with user-friendly messages
-        if status.as_u16() == 401 {
-            return Err("Unauthorized: Invalid or missing token".to_string());
-        }
-        if status.as_u16() == 403 {
-            return Err("Forbidden: You don't have permission to access this resource".to_string());
-        }
-        if status.as_u16() == 404 {
-            return Err("Not found: The requested endpoint doesn't exist (is the server up-to-date?)".to_string());
-        }
-        if status.as_u16() == 429 {
-            return Err("Rate limited: Too many requests, please wait".to_string());
-        }
-        if status.as_u16() >= 500 {
-            return Err(format!("Server error (HTTP {})", status));
-        }
-
-        let body = resp.text().map_err(|e| format!("Failed to read response: {}", e))?;
-
-        if body.is_empty() {
-            return Err(format!("Empty response from server (HTTP {})", status));
-        }
-
-        serde_json::from_str(&body).map_err(|e| {
-            format!("Failed to parse JSON (HTTP {}): {}", status, e)
-        })
-    }
-
-    fn get(&self, path: &str) -> Result<Value, String> {
-        let url = format!("{}{}", self.server, path);
-        let mut req = self.http.get(&url);
-        if let Some(token) = &self.token {
-            req = req.header("Authorization", format!("token {}", token));
-        }
-        let resp = req.send().map_err(|e| format!("Request failed: {}", e))?;
-        Self::parse_response(resp)
-    }
-
-    fn post(&self, path: &str, body: &Value) -> Result<Value, String> {
-        let url = format!("{}{}", self.server, path);
-        let mut req = self.http.post(&url).json(body);
-        if let Some(token) = &self.token {
-            req = req.header("Authorization", format!("token {}", token));
-        }
-        let resp = req.send().map_err(|e| format!("Request failed: {}", e))?;
-        Self::parse_response(resp)
-    }
-
-    fn post_empty(&self, path: &str) -> Result<Value, String> {
-        let url = format!("{}{}", self.server, path);
-        let mut req = self.http.post(&url);
-        if let Some(token) = &self.token {
-            req = req.header("Authorization", format!("token {}", token));
-        }
-        let resp = req.send().map_err(|e| format!("Request failed: {}", e))?;
-        Self::parse_response(resp)
-    }
-
-    fn patch(&self, path: &str, body: &Value) -> Result<Value, String> {
-        let url = format!("{}{}", self.server, path);
-        let mut req = self.http.patch(&url).json(body);
-        if let Some(token) = &self.token {
-            req = req.header("Authorization", format!("token {}", token));
-        }
-        let resp = req.send().map_err(|e| format!("Request failed: {}", e))?;
-        Self::parse_response(resp)
-    }
-
-    fn delete(&self, path: &str) -> Result<Value, String> {
-        let url = format!("{}{}", self.server, path);
-        let mut req = self.http.delete(&url);
-        if let Some(token) = &self.token {
-            req = req.header("Authorization", format!("token {}", token));
-        }
-        let resp = req.send().map_err(|e| format!("Request failed: {}", e))?;
-        Self::parse_response(resp)
-    }
-}
-
-fn print_json(value: &Value) {
-    println!("{}", serde_json::to_string_pretty(value).unwrap());
-}
-
-// Formatting helpers
-mod fmt {
-    use serde_json::Value;
-
-    pub fn bool_icon(v: bool) -> &'static str {
-        if v { "[ON]" } else { "[OFF]" }
-    }
-
-    pub fn format_timestamp(ts: &str) -> String {
-        // Timestamps come as "2026-01-16T03:43:21.123456" - extract date and time
-        if let Some(t_idx) = ts.find('T') {
-            let date = &ts[..t_idx];
-            let time = &ts[t_idx + 1..];
-            // Take only HH:MM:SS from time
-            let time_short = time.split('.').next().unwrap_or(time);
-            format!("{} {}", date, time_short)
-        } else {
-            ts.to_string()
-        }
-    }
-
-    pub fn get_str<'a>(v: &'a Value, key: &str) -> &'a str {
-        v.get(key).and_then(|x| x.as_str()).unwrap_or("-")
-    }
-
-    pub fn get_i64(v: &Value, key: &str) -> i64 {
-        v.get(key).and_then(|x| x.as_i64()).unwrap_or(0)
-    }
-
-    pub fn get_bool(v: &Value, key: &str) -> bool {
-        v.get(key).and_then(|x| x.as_bool()).unwrap_or(false)
-    }
-}
-
-fn handle_response(result: Result<Value, String>, raw: bool) {
-    handle_response_with(result, raw, |json| print_json(json))
-}
-
-fn handle_response_with<F>(result: Result<Value, String>, raw: bool, format_fn: F)
-where
-    F: FnOnce(&Value),
-{
-    match result {
-        Ok(json) => {
-            let status = json.get("status").and_then(|s| s.as_i64()).unwrap_or(0);
-            if status == 200 {
-                if raw {
-                    print_json(&json);
-                } else {
-                    format_fn(&json);
-                }
-            } else {
-                let error = json
-                    .get("error")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("Unknown error");
-                eprintln!("Error: {}", error);
-                std::process::exit(1);
-            }
-        }
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
-        }
-    }
-}
-
-// Formatted output functions
-fn format_me(json: &Value) {
-    if let Some(user_wrapper) = json.get("user") {
-        let user = user_wrapper.get("user").unwrap_or(user_wrapper);
-        let ntfy = user_wrapper.get("ntfy");
-
-        println!("User Info");
-        println!("=========");
-        println!("ID:           {}", fmt::get_str(user, "id"));
-        println!("Type:         {}", fmt::get_str(user, "user_type"));
-        println!("Language:     {}", fmt::get_str(user, "language_code"));
-        println!("Created:      {}", fmt::format_timestamp(fmt::get_str(user, "created_at")));
-        println!("Up delay:     {}s", fmt::get_i64(user, "up_delay"));
-        let mw_start = user.get("maint_window_start_utc").and_then(|v| v.as_i64());
-        let mw_end = user.get("maint_window_end_utc").and_then(|v| v.as_i64());
-        match (mw_start, mw_end) {
-            (Some(s), Some(e)) => println!("Maintenance:  {:02}:{:02}-{:02}:{:02} UTC", s / 60, s % 60, e / 60, e % 60),
-            _ => println!("Maintenance:  [not set]"),
-        }
-        println!("Invites:      {}/{}", fmt::get_i64(user, "invites_used"), fmt::get_i64(user, "invites_limit"));
-
-        if let Some(ntfy) = ntfy {
-            println!();
-            println!("Ntfy.sh       {}", fmt::bool_icon(fmt::get_bool(ntfy, "enabled")));
-            println!("  Topic:      {}", fmt::get_str(ntfy, "topic"));
-            println!("  Username:   {}", fmt::get_str(ntfy, "username"));
-        }
-    } else {
-        print_json(json);
-    }
-}
-
-fn format_users_list(json: &Value) {
-    if let Some(users) = json.get("users").and_then(|u| u.as_array()) {
-        if users.is_empty() {
-            println!("No users found.");
-            return;
-        }
-        println!("{:<8} {:<36} {:>7} {:>10}",
-            "TYPE", "ID", "NTFY", "INVITES");
-        println!("{}", "-".repeat(65));
-        for user_wrapper in users {
-            let user = user_wrapper.get("user").unwrap_or(user_wrapper);
-            let ntfy = user_wrapper.get("ntfy");
-
-            let user_type = fmt::get_str(user, "user_type");
-            let id = fmt::get_str(user, "id");
-            let ntfy_on = ntfy.map(|n| fmt::get_bool(n, "enabled")).unwrap_or(false);
-            let invites = format!("{}/{}", fmt::get_i64(user, "invites_used"), fmt::get_i64(user, "invites_limit"));
-
-            println!("{:<8} {:<36} {:>7} {:>10}",
-                user_type, id, fmt::bool_icon(ntfy_on), invites);
-        }
-        println!();
-        println!("Total: {} user(s)", users.len());
-    } else {
-        print_json(json);
-    }
-}
-
-fn format_invites_list(json: &Value) {
-    if let Some(invites) = json.get("invites").and_then(|i| i.as_array()) {
-        if invites.is_empty() {
-            println!("No invites found.");
-            return;
-        }
-        println!("{:<36} {:<20}",
-            "ID", "CREATED");
-        println!("{}", "-".repeat(58));
-        for invite in invites {
-            let id = fmt::get_str(invite, "id");
-            let created = fmt::format_timestamp(fmt::get_str(invite, "created_at"));
-
-            println!("{:<36} {:<20}", id, created);
-        }
-        println!();
-        println!("Total: {} invite(s)", invites.len());
-    } else {
-        print_json(json);
-    }
-}
-
-fn format_ntfy(json: &Value) {
-    if let Some(ntfy) = json.get("ntfy") {
-        println!("Ntfy.sh Settings");
-        println!("================");
-        println!("Enabled:      {}", fmt::bool_icon(fmt::get_bool(ntfy, "enabled")));
-        println!("Topic:        {}", fmt::get_str(ntfy, "topic"));
-        println!("Username:     {}", fmt::get_str(ntfy, "username"));
-        println!("Password:     {}", fmt::get_str(ntfy, "password"));
-    } else {
-        print_json(json);
-    }
-}
-
-fn format_settings_update(json: &Value) {
-    println!("Settings updated:");
-    if let Some(v) = json.get("up_delay").and_then(|v| v.as_i64()) {
-        println!("  up_delay:     {}s", v);
-    }
-    let start = json.get("maint_window_start_utc");
-    let end = json.get("maint_window_end_utc");
-    if start.is_some() || end.is_some() {
-        match (start.and_then(|v| v.as_i64()), end.and_then(|v| v.as_i64())) {
-            (Some(s), Some(e)) => println!("  maintenance:  {:02}:{:02}-{:02}:{:02} UTC", s / 60, s % 60, e / 60, e % 60),
-            _ => println!("  maintenance:  [cleared]"),
-        }
-    }
-}
-
-fn require_token(token: &Option<String>) -> String {
-    match token {
-        Some(t) => t.clone(),
-        None => {
-            eprintln!("Error: This command requires authentication. Please provide --token or set OUBOT_TOKEN.");
-            std::process::exit(1);
-        }
+fn require_token(token: &Option<String>) {
+    if token.is_none() {
+        eprintln!("Error: This command requires authentication. Please provide --token or set OUBOT_TOKEN.");
+        std::process::exit(1);
     }
 }
 
@@ -422,7 +39,11 @@ fn main() {
     let client = Client::new(cli.server, cli.token.clone());
 
     match cli.command {
-        Commands::Init { invite, language, invites } => {
+        Commands::Init {
+            invite,
+            language,
+            invites,
+        } => {
             // If invite is provided, create regular user; otherwise create admin (first user)
             let is_admin = invite.is_none();
             let user_type = if is_admin { "Admin" } else { "Normal" };
@@ -462,27 +83,25 @@ fn main() {
         Commands::Token(cmd) => {
             require_token(&cli.token);
             match cmd {
-                TokenCommands::Show => {
-                    match client.get("/api/v1/me") {
-                        Ok(json) => {
-                            if let Some(token) = json
-                                .get("user")
-                                .and_then(|u| u.get("user"))
-                                .and_then(|u| u.get("access_token"))
-                                .and_then(|t| t.as_str())
-                            {
-                                println!("{}", token);
-                            } else {
-                                eprintln!("Error: Could not extract token from response");
-                                std::process::exit(1);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {}", e);
+                TokenCommands::Show => match client.get("/api/v1/me") {
+                    Ok(json) => {
+                        if let Some(token) = json
+                            .get("user")
+                            .and_then(|u| u.get("user"))
+                            .and_then(|u| u.get("access_token"))
+                            .and_then(|t| t.as_str())
+                        {
+                            println!("{}", token);
+                        } else {
+                            eprintln!("Error: Could not extract token from response");
                             std::process::exit(1);
                         }
                     }
-                }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                },
                 TokenCommands::Regenerate => {
                     handle_response(client.post_empty("/api/v1/me/regenerate-token"), cli.raw);
                 }
@@ -495,16 +114,14 @@ fn main() {
                 NtfyCommands::Show => {
                     handle_response_with(client.get("/api/v1/me/ntfy"), cli.raw, format_ntfy);
                 }
-                NtfyCommands::Enable => {
-                    let body = serde_json::json!({"enabled": true});
+                NtfyCommands::Enable | NtfyCommands::Disable => {
+                    let enabled = matches!(cmd, NtfyCommands::Enable);
+                    let body = serde_json::json!({"enabled": enabled});
                     handle_response_with(client.patch("/api/v1/me/ntfy", &body), cli.raw, |json| {
-                        println!("Ntfy notifications {}", if fmt::get_bool(json, "enabled") { "enabled" } else { "disabled" });
-                    });
-                }
-                NtfyCommands::Disable => {
-                    let body = serde_json::json!({"enabled": false});
-                    handle_response_with(client.patch("/api/v1/me/ntfy", &body), cli.raw, |json| {
-                        println!("Ntfy notifications {}", if fmt::get_bool(json, "enabled") { "enabled" } else { "disabled" });
+                        println!(
+                            "Ntfy notifications {}",
+                            if get_bool(json, "enabled") { "enabled" } else { "disabled" }
+                        );
                     });
                 }
             }
@@ -551,13 +168,12 @@ fn main() {
                     handle_response_with(client.get("/api/v1/me/settings"), cli.raw, |json| {
                         println!("Settings");
                         println!("========");
-                        println!("Up delay:     {}s", fmt::get_i64(json, "up_delay"));
+                        println!("Up delay:     {}s", get_i64(json, "up_delay"));
                         let start = json.get("maint_window_start_utc").and_then(|v| v.as_i64());
                         let end = json.get("maint_window_end_utc").and_then(|v| v.as_i64());
                         match (start, end) {
                             (Some(s), Some(e)) => {
-                                println!("Maintenance:  {:02}:{:02}-{:02}:{:02} UTC",
-                                    s / 60, s % 60, e / 60, e % 60);
+                                println!("Maintenance:  {:02}:{:02}-{:02}:{:02} UTC", s / 60, s % 60, e / 60, e % 60);
                             }
                             _ => println!("Maintenance:  [not set]"),
                         }
@@ -577,18 +193,24 @@ fn main() {
                                 }
                                 let h: i16 = parts[0].parse().map_err(|_| format!("Invalid hour in '{}'", t))?;
                                 let m: i16 = parts[1].parse().map_err(|_| format!("Invalid minute in '{}'", t))?;
-                                if h < 0 || h > 23 || m < 0 || m > 59 {
+                                if !(0..=23).contains(&h) || !(0..=59).contains(&m) {
                                     return Err(format!("Time '{}' out of range (00:00-23:59)", t));
                                 }
                                 Ok(h * 60 + m)
                             };
                             let start_min = match parse_time(&s) {
                                 Ok(v) => v,
-                                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                                Err(e) => {
+                                    eprintln!("Error: {}", e);
+                                    std::process::exit(1);
+                                }
                             };
                             let end_min = match parse_time(&e) {
                                 Ok(v) => v,
-                                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                                Err(e) => {
+                                    eprintln!("Error: {}", e);
+                                    std::process::exit(1);
+                                }
                             };
                             serde_json::json!({
                                 "maint_window_start_utc": start_min,
@@ -625,11 +247,7 @@ fn main() {
                 }
                 AdminCommands::CreateInvite => {
                     handle_response_with(client.post_empty("/api/v1/invites"), cli.raw, |json| {
-                        if let Some(token) = json
-                            .get("invite")
-                            .and_then(|i| i.get("token"))
-                            .and_then(|t| t.as_str())
-                        {
+                        if let Some(token) = json.get("invite").and_then(|i| i.get("token")).and_then(|t| t.as_str()) {
                             println!("Invite created successfully!");
                             println!("Invite token: {}", token);
                         } else {

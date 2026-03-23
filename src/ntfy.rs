@@ -2,7 +2,6 @@ use crate::db::NtfyUser;
 use chbs::{config::BasicConfig, prelude::*, probability::Probability};
 use lazy_static::lazy_static;
 use rand::{Rng, distributions::Alphanumeric};
-use reqwest;
 use reqwest::header;
 use rocket::serde::{Deserialize, Serialize, json::Value};
 use std::env::var;
@@ -34,11 +33,7 @@ impl fmt::Display for NtfyCustomError {
     }
 }
 
-impl Error for NtfyCustomError {
-    fn description(&self) -> &str {
-        &self.data
-    }
-}
+impl Error for NtfyCustomError {}
 
 #[derive(Debug, Clone)]
 pub struct NtfyClient {
@@ -73,11 +68,11 @@ impl NtfyClient {
             .build()
             .expect("RIP");
 
-        return NtfyClient {
+        NtfyClient {
             base_url: NTFY_BASE_URL.clone(),
             base_tier: NTFY_USER_TIER.clone(),
             client,
-        };
+        }
     }
 
     fn generate_new_user(&self, enabled: bool) -> NtfyUser {
@@ -87,18 +82,20 @@ impl NtfyClient {
         //  use-case (read-only private notifications channel) combined with
         //  random topic and user name. The only change I would like to add
         //  is another word styler that randomly turns them into l33t spelling.
-        let mut config = BasicConfig::default();
-        config.words = 3;
-        config.separator = "-".into();
-        config.capitalize_first = Probability::Never;
-        config.capitalize_words = Probability::Never;
-        let passgen = config.to_scheme();
+        let passgen = BasicConfig {
+            words: 3,
+            separator: "-".into(),
+            capitalize_first: Probability::Never,
+            capitalize_words: Probability::Never,
+            ..BasicConfig::default()
+        }
+        .to_scheme();
 
         let mut rng = rand::thread_rng();
         // Random unique identifiers for user and topic.
         let topic_suffix: String = (&mut rng).sample_iter(&Alphanumeric).take(8).map(char::from).collect();
         let user_suffix: String = (&mut rng).sample_iter(&Alphanumeric).take(8).map(char::from).collect();
-        return NtfyUser {
+        NtfyUser {
             id: Uuid::new_v4(),
             enabled,
             topic: format!("topic_{topic_suffix}"),
@@ -106,7 +103,7 @@ impl NtfyClient {
             username: format!("user_{user_suffix}"),
             password: passgen.generate(),
             tier: self.base_tier.clone(),
-        };
+        }
     }
 
     pub async fn create_new_user(&self, enabled: bool) -> Result<NtfyUser> {
@@ -134,7 +131,7 @@ impl NtfyClient {
             return Err(Box::new(NtfyCustomError::new(access_response.json::<Value>().await?)));
         }
 
-        return Ok(user);
+        Ok(user)
     }
 
     pub async fn delete_user(&self, username: &str) -> Result<()> {
@@ -149,7 +146,7 @@ impl NtfyClient {
             return Err(Box::new(NtfyCustomError::new(response.json::<Value>().await?)));
         }
 
-        return Ok(());
+        Ok(())
     }
 
     pub async fn send_notification(&self, data: NtfyNotification) -> Result<()> {
@@ -164,6 +161,6 @@ impl NtfyClient {
             .await?
             .error_for_status()?;
 
-        return Ok(());
+        Ok(())
     }
 }

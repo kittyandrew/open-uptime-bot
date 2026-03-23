@@ -35,7 +35,10 @@ test:
       chmod +x $out/bin/tester-script-sh
     '';
   };
-  tester-script = if test-script-type == "bash" then tester-script-sh else tester-script-py;
+  tester-script =
+    if test-script-type == "bash"
+    then tester-script-sh
+    else tester-script-py;
 in
   pkgs.testers.runNixOSTest {
     node.specialArgs = {

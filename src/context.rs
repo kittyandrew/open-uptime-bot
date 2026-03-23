@@ -16,13 +16,13 @@ pub struct Context {
 
 impl Context {
     pub fn init() -> Context {
-        return Context {
+        Context {
             users: Default::default(),
             tokens: Default::default(),
             invite_tokens: Default::default(),
             init_lock: Default::default(),
             ntfy: NtfyClient::new(),
-        };
+        }
     }
 
     pub async fn add_state(&self, v: UserState) {

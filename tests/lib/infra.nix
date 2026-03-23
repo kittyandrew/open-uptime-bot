@@ -1,10 +1,7 @@
 # Shared infrastructure services for NixOS integration tests.
 # PostgreSQL + ntfy-sh — used by both native oubot tests (via services.nix)
 # and Docker E2E tests (directly).
-{
-  pkgs,
-  ...
-}: let
+{pkgs, ...}: let
   c = import ./config.nix;
 in {
   services = {

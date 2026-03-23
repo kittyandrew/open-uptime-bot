@@ -116,5 +116,5 @@ impl Fairing for PrometheusCollection {
 pub async fn get_metrics(_rl: crate::bauth::RateLimitGuard, encoder: &State<TextEncoder>) -> String {
     let mut buffer = Vec::new();
     encoder.encode(&prometheus::gather(), &mut buffer).unwrap();
-    return String::from_utf8(buffer).unwrap();
+    String::from_utf8(buffer).unwrap()
 }

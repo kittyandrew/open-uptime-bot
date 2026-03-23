@@ -29,9 +29,7 @@ use esp_hal::{
 };
 use esp_radio::{
     Controller,
-    wifi::{
-        ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
-    },
+    wifi::{ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent, WifiStaState},
 };
 use reqwless::client::{HttpClient, TlsConfig, TlsVerify};
 use reqwless::request::RequestBuilder;
@@ -56,7 +54,12 @@ macro_rules! mk_static {
 }
 
 fn auth_header() -> heapless::String<64> {
-    const { assert!("token ".len() + TOKEN.len() <= 64, "OUBOT_TOKEN too long for auth header buffer") };
+    const {
+        assert!(
+            "token ".len() + TOKEN.len() <= 64,
+            "OUBOT_TOKEN too long for auth header buffer"
+        )
+    };
     let mut s = heapless::String::new();
     s.push_str("token ").unwrap();
     s.push_str(TOKEN).unwrap();
@@ -75,7 +78,9 @@ async fn error_wait(failures: u32) {
 
 async fn halt(led: &mut Output<'_>) -> ! {
     led.set_low();
-    loop { Timer::after(Duration::from_secs(3600)).await; }
+    loop {
+        Timer::after(Duration::from_secs(3600)).await;
+    }
 }
 
 #[esp_rtos::main]
@@ -100,8 +105,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let esp_radio_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
 
-    let (controller, interfaces) =
-        esp_radio::wifi::new(esp_radio_ctrl, peripherals.WIFI, Default::default()).unwrap();
+    let (controller, interfaces) = esp_radio::wifi::new(esp_radio_ctrl, peripherals.WIFI, Default::default()).unwrap();
 
     let wifi_interface = interfaces.sta;
     let net_config = embassy_net::Config::dhcpv4(Default::default());
@@ -219,9 +223,16 @@ async fn main(spawner: Spawner) -> ! {
                 Ok(status) => {
                     if status == 401 {
                         auth_failures += 1;
-                        log::error!("up: 401 unauthorized — token is invalid, re-flash with correct OUBOT_TOKEN ({}/{})", auth_failures, MAX_AUTH_FAILURES);
+                        log::error!(
+                            "up: 401 unauthorized — token is invalid, re-flash with correct OUBOT_TOKEN ({}/{})",
+                            auth_failures,
+                            MAX_AUTH_FAILURES
+                        );
                         if auth_failures >= MAX_AUTH_FAILURES {
-                            log::error!("up: {} consecutive 401s — halting. Re-flash with valid OUBOT_TOKEN.", MAX_AUTH_FAILURES);
+                            log::error!(
+                                "up: {} consecutive 401s — halting. Re-flash with valid OUBOT_TOKEN.",
+                                MAX_AUTH_FAILURES
+                            );
                             halt(&mut led).await;
                         }
                     } else {
@@ -260,11 +271,7 @@ async fn connection(mut controller: WifiController<'static>) {
             _ => {}
         }
         if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = ModeConfig::Client(
-                ClientConfig::default()
-                    .with_ssid(SSID.into())
-                    .with_password(PASSWORD.into()),
-            );
+            let client_config = ModeConfig::Client(ClientConfig::default().with_ssid(SSID.into()).with_password(PASSWORD.into()));
             if let Err(e) = controller.set_config(&client_config) {
                 log::error!("WiFi set_config failed: {:?}", e);
                 Timer::after(Duration::from_millis(5000)).await;

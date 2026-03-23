@@ -21,7 +21,7 @@ pub fn validate_language_code(lang: &str) -> Result<(), String> {
     if lang.len() < 2 || lang.len() > 3 || !lang.chars().all(|c| c.is_ascii_lowercase()) {
         return Err("Invalid language code: must be 2-3 lowercase letters (e.g., \"uk\", \"en\")".to_string());
     }
-    if !crate::SUPPORTED_LOCALES.contains(&lang) {
+    if !crate::notifications::SUPPORTED_LOCALES.contains(&lang) {
         warn!("Language code '{lang}' is not a supported locale, notifications will fall back to English");
     }
     Ok(())
@@ -69,10 +69,10 @@ pub async fn create_user(opts: &NewUser, conn: &mut Conn, context: &Context) -> 
     };
 
     // Validate up_delay if provided
-    if let Some(up_delay) = opts.up_delay {
-        if up_delay < 10 || up_delay > 32767 {
-            return Err("up_delay must be between 10 and 32767 seconds".to_string());
-        }
+    if let Some(up_delay) = opts.up_delay
+        && (!(10..=32767).contains(&up_delay))
+    {
+        return Err("up_delay must be between 10 and 32767 seconds".to_string());
     }
 
     validate_language_code(&opts.language_code)?;
@@ -81,13 +81,7 @@ pub async fn create_user(opts: &NewUser, conn: &mut Conn, context: &Context) -> 
         Ok(new_ntfy_user) => new_ntfy_user,
         Err(err) => return Err(format!("{err:?}")),
     };
-    let new_user = User::new(
-        user_type,
-        invites_limit,
-        opts.up_delay,
-        opts.language_code.clone(),
-        &ntfy,
-    );
+    let new_user = User::new(user_type, invites_limit, opts.up_delay, opts.language_code.clone(), &ntfy);
     let new_state = db::UserState {
         uptime: db::UptimeState::new(new_user.id),
         user: new_user,
@@ -97,7 +91,10 @@ pub async fn create_user(opts: &NewUser, conn: &mut Conn, context: &Context) -> 
     if let Err(err) = db::create_new_state(conn, &new_state, invite_id.as_ref()).await {
         // Clean up the ntfy user we already created on the external server
         if let Err(cleanup_err) = context.ntfy.delete_user(&new_state.ntfy.username).await {
-            warn!("Failed to clean up ntfy user '{}' after DB error: {cleanup_err:?}", new_state.ntfy.username);
+            warn!(
+                "Failed to clean up ntfy user '{}' after DB error: {cleanup_err:?}",
+                new_state.ntfy.username
+            );
         }
         return Err(format!("{err:?}"));
     };
@@ -129,7 +126,7 @@ pub async fn create_invite(opts: &NewInvite, conn: &mut Conn, context: &Context)
         };
     }
 
-    let new_invite = db::Invite::new(opts.owner_id.clone());
+    let new_invite = db::Invite::new(opts.owner_id);
     match db::create_new_invite(conn, &new_invite).await {
         Ok(_) => {
             context.add_invite(new_invite.clone()).await;
@@ -138,5 +135,3 @@ pub async fn create_invite(opts: &NewInvite, conn: &mut Conn, context: &Context)
         Err(err) => Err(format!("DB Err: {err:?}")),
     }
 }
-
-

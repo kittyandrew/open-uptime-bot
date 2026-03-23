@@ -15,21 +15,25 @@
   # the #[embassy_executor::main] macro. Crane's deps build creates a dummy
   # main.rs without these, so linking fails. Use `cargo check` for deps to
   # compile without linking, then build the real binary with full source.
-  commonArgs = envVars // {
-    pname = "pico-w-uptime-client";
-    version = "2026.3.23";
-    src = ./.;
-    doCheck = false; # Can't run no_std binary on build host.
-    cargoExtraArgs = "--target thumbv6m-none-eabi";
-    postUnpack = ''
-      sed -i '/^\[unstable\]$/d; /^build-std/d' $sourceRoot/.cargo/config.toml
-    '';
-    # @NOTE: memory.x must be in the linker search path for cortex-m-rt's link.x.
-    CARGO_TARGET_THUMBV6M_NONE_EABI_RUSTFLAGS = "-C link-arg=-L${./.}";
-  };
+  commonArgs =
+    envVars
+    // {
+      pname = "pico-w-uptime-client";
+      version = "2026.3.23";
+      src = ./.;
+      doCheck = false; # Can't run no_std binary on build host.
+      cargoExtraArgs = "--target thumbv6m-none-eabi";
+      postUnpack = ''
+        sed -i '/^\[unstable\]$/d; /^build-std/d' $sourceRoot/.cargo/config.toml
+      '';
+      # @NOTE: memory.x must be in the linker search path for cortex-m-rt's link.x.
+      CARGO_TARGET_THUMBV6M_NONE_EABI_RUSTFLAGS = "-C link-arg=-L${./.}";
+    };
 in
-  craneLib.buildPackage (commonArgs // {
-    cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-      buildPhaseCargoCommand = "cargo check --release --target thumbv6m-none-eabi";
-    });
-  })
+  craneLib.buildPackage (commonArgs
+    // {
+      cargoArtifacts = craneLib.buildDepsOnly (commonArgs
+        // {
+          buildPhaseCargoCommand = "cargo check --release --target thumbv6m-none-eabi";
+        });
+    })

@@ -25,7 +25,12 @@
       };
 
       # Open all ports so the client VM can reach oubot
-      networking.firewall.allowedTCPPortRanges = [{ from = 1; to = 65535; }];
+      networking.firewall.allowedTCPPortRanges = [
+        {
+          from = 1;
+          to = 65535;
+        }
+      ];
 
       # @NOTE: Same pattern as kittyos hosts/tustan/default.nix mailu-smtp-auth jail.
       #  Inline filter + journalmatch, systemd backend. maxretry=5 triggers actual ban.

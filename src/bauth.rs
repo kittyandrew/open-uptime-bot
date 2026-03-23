@@ -1,9 +1,9 @@
 use crate::{context, db, prom};
 use governor::{Quota, RateLimiter, clock::QuantaClock, state::InMemoryState};
 use rocket::fairing::{Fairing, Info, Kind};
-use rocket::{Data, Request, State};
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome};
+use rocket::{Data, Request, State};
 use std::net::IpAddr;
 use std::num::NonZero;
 use std::sync::Arc;
@@ -67,7 +67,10 @@ fn token_prefix(raw: &str) -> &'static str {
 }
 
 fn log_auth_failure(request: &Request<'_>, reason: &str, raw_header: Option<&str>) {
-    let ip = request.client_ip().map(|ip| ip.to_string()).unwrap_or_else(|| "unknown".to_string());
+    let ip = request
+        .client_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
     let prefix = raw_header.map(token_prefix).unwrap_or("none");
     warn!("[AUTH] ip={ip} result={reason} prefix={prefix}");
     prom::AUTH_FAILURES.with_label_values(&[reason]).inc();
@@ -109,7 +112,7 @@ pub enum BAuthError {
 
 /// Shared token resolution: rate limit check, header extraction, token lookup, failure logging.
 /// Returns the authenticated user ID or an error outcome.
-async fn resolve_token<'r>(req: &'r Request<'_>) -> Result<db::ID, (Status, BAuthError)> {
+async fn resolve_token(req: &Request<'_>) -> Result<db::ID, (Status, BAuthError)> {
     // Check if the IP rate limiter already rejected this request
     if req.local_cache(|| RateLimited(false)).0 {
         return Err((Status::TooManyRequests, BAuthError::RateLimited));
@@ -159,9 +162,7 @@ impl<'r> FromRequest<'r> for AdminAuth {
         let context = req.guard::<&State<context::Context>>().await.unwrap();
         let users = context.users.read().await;
         match users.get(&uid) {
-            Some(state) if state.user.user_type == db::UserType::Admin => {
-                Outcome::Success(AdminAuth { uid })
-            }
+            Some(state) if state.user.user_type == db::UserType::Admin => Outcome::Success(AdminAuth { uid }),
             Some(_) => Outcome::Error((Status::Forbidden, BAuthError::NotAdmin)),
             None => Outcome::Error((Status::Unauthorized, BAuthError::Invalid)),
         }

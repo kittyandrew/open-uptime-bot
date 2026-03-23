@@ -39,7 +39,12 @@ bind_interrupts!(struct Irqs {
 
 fn auth_header() -> heapless::String<64> {
     // @NOTE: Use core::assert! because defmt overrides assert! and doesn't work in const blocks.
-    const { core::assert!("token ".len() + TOKEN.len() <= 64, "OUBOT_TOKEN too long for auth header buffer") };
+    const {
+        core::assert!(
+            "token ".len() + TOKEN.len() <= 64,
+            "OUBOT_TOKEN too long for auth header buffer"
+        )
+    };
     let mut s = heapless::String::new();
     s.push_str("token ").unwrap();
     s.push_str(TOKEN).unwrap();
@@ -66,7 +71,9 @@ async fn error_wait(failures: u32) {
 
 async fn halt(control: &mut cyw43::Control<'_>) -> ! {
     control.gpio_set(0, true).await;
-    loop { Timer::after(Duration::from_secs(3600)).await; }
+    loop {
+        Timer::after(Duration::from_secs(3600)).await;
+    }
 }
 
 async fn wifi_connect(control: &mut cyw43::Control<'_>, stack: embassy_net::Stack<'_>) {
@@ -132,7 +139,9 @@ async fn main(spawner: Spawner) {
         Err(_) => {
             error!("Failed to spawn cyw43 task");
             // @NOTE: Can't call halt() here — control requires cyw43 runner to be running.
-            loop { Timer::after(Duration::from_secs(3600)).await; }
+            loop {
+                Timer::after(Duration::from_secs(3600)).await;
+            }
         }
     }
 
@@ -147,12 +156,7 @@ async fn main(spawner: Spawner) {
     // @NOTE: 5 socket slots — DHCP(1) + DNS(1) + TCP(1) + 2 spare.
     // Spare slots prevent silent failures during reconnect overlap.
     static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
-    let (stack, net_runner) = embassy_net::new(
-        net_device,
-        net_config,
-        RESOURCES.init(StackResources::<5>::new()),
-        seed,
-    );
+    let (stack, net_runner) = embassy_net::new(net_device, net_config, RESOURCES.init(StackResources::<5>::new()), seed);
 
     match net_task(net_runner) {
         Ok(token) => spawner.spawn(token),
@@ -241,9 +245,15 @@ async fn main(spawner: Spawner) {
                 Ok(status) => {
                     if status == 401 {
                         auth_failures += 1;
-                        error!("up: 401 unauthorized — token is invalid, re-flash with correct OUBOT_TOKEN ({}/{})", auth_failures, MAX_AUTH_FAILURES);
+                        error!(
+                            "up: 401 unauthorized — token is invalid, re-flash with correct OUBOT_TOKEN ({}/{})",
+                            auth_failures, MAX_AUTH_FAILURES
+                        );
                         if auth_failures >= MAX_AUTH_FAILURES {
-                            error!("up: {} consecutive 401s — halting. Re-flash with valid OUBOT_TOKEN.", MAX_AUTH_FAILURES);
+                            error!(
+                                "up: {} consecutive 401s — halting. Re-flash with valid OUBOT_TOKEN.",
+                                MAX_AUTH_FAILURES
+                            );
                             halt(&mut control).await;
                         }
                     } else {
@@ -271,9 +281,7 @@ async fn main(spawner: Spawner) {
 // @NOTE: The cyw43 runner must run continuously — it handles WiFi chip communication
 // (firmware commands, event processing, TX/RX). Stopping it kills WiFi and LED control.
 #[embassy_executor::task]
-async fn cyw43_task(
-    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>,
-) -> ! {
+async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>) -> ! {
     runner.run().await
 }
 

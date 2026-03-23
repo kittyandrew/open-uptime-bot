@@ -70,9 +70,4 @@ diesel::table! {
 diesel::joinable!(uptime_states -> users (user_id));
 diesel::joinable!(users -> ntfy_users (ntfy_id));
 
-diesel::allow_tables_to_appear_in_same_query!(
-    invites,
-    ntfy_users,
-    uptime_states,
-    users,
-);
+diesel::allow_tables_to_appear_in_same_query!(invites, ntfy_users, uptime_states, users,);

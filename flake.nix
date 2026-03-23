@@ -22,6 +22,11 @@
       (crane.mkLib pkgs).overrideToolchain
       fenixPkgs.minimal.toolchain;
 
+    # Lint toolchain: minimal + rustfmt + clippy (for flake checks)
+    lintCraneLib =
+      (crane.mkLib pkgs).overrideToolchain
+      fenixPkgs.default.toolchain;
+
     oubotRaw = craneLib.buildPackage {
       src = ./.;
       nativeBuildInputs = [pkgs.pkg-config];
@@ -43,23 +48,21 @@
 
     # ESP32-C3 cross-compilation toolchain with pre-built riscv32imc std.
     # @NOTE: Uses nightly + riscv32imc rust-std to avoid build-std (incompatible with crane).
-    esp32Client = import ./clients/esp32/package.nix {
-      craneLib = (crane.mkLib pkgs).overrideToolchain (fenixPkgs.combine [
-        fenixPkgs.latest.rustc
-        fenixPkgs.latest.cargo
-        fenixPkgs.targets."riscv32imc-unknown-none-elf".latest.rust-std
-      ]);
-    };
+    esp32CraneLib = (crane.mkLib pkgs).overrideToolchain (fenixPkgs.combine [
+      fenixPkgs.latest.rustc
+      fenixPkgs.latest.cargo
+      fenixPkgs.targets."riscv32imc-unknown-none-elf".latest.rust-std
+    ]);
+    esp32Client = import ./clients/esp32/package.nix {craneLib = esp32CraneLib;};
 
     # Pico W (RP2040) cross-compilation toolchain with pre-built thumbv6m std.
     # @NOTE: Same pattern as ESP32 — nightly + target rust-std to avoid build-std.
-    picoWClient = import ./clients/pico-w/package.nix {
-      craneLib = (crane.mkLib pkgs).overrideToolchain (fenixPkgs.combine [
-        fenixPkgs.latest.rustc
-        fenixPkgs.latest.cargo
-        fenixPkgs.targets."thumbv6m-none-eabi".latest.rust-std
-      ]);
-    };
+    picoWCraneLib = (crane.mkLib pkgs).overrideToolchain (fenixPkgs.combine [
+      fenixPkgs.latest.rustc
+      fenixPkgs.latest.cargo
+      fenixPkgs.targets."thumbv6m-none-eabi".latest.rust-std
+    ]);
+    picoWClient = import ./clients/pico-w/package.nix {craneLib = picoWCraneLib;};
 
     toNanosec = seconds: seconds * 1000000000; # Specify nanoseconds as per docker spec (LMAO).
 
@@ -102,34 +105,39 @@
       docker = docker-image;
     };
 
-    devShells.${system}.default =
-      with pkgs;
-        mkShell {
-          RUST_LOG = "info";
-          nativeBuildInputs = [pkg-config git];
-          buildInputs = [
-            # Core Rust toolchain (complete — includes rustc, cargo, clippy, rust-src, rust-analyzer).
-            fenixPkgs.complete.toolchain
-            # Dev dependencies
-            oubotCli
-            openssl
-            bore-cli
-            diesel-cli
-            shellcheck
-            # Runtime dependency
-            postgresql.lib
-            # ESP32 dev stuff.
-            espflash
-            # Pico W dev stuff.
-            picotool
-            elf2uf2-rs
-            minicom
-          ];
-          shellHook = ''
-            export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [pkgs.openssl]}
-            echo -e "\nWelcome to the shell :)\n"
-          '';
-        };
+    devShells.${system}.default = with pkgs;
+      mkShell {
+        RUST_LOG = "info";
+        nativeBuildInputs = [pkg-config git];
+        buildInputs = [
+          # Core Rust toolchain (complete — includes rustc, cargo, clippy, rust-src, rust-analyzer).
+          fenixPkgs.complete.toolchain
+          # Dev dependencies
+          oubotCli
+          openssl
+          bore-cli
+          diesel-cli
+          shellcheck
+          # Lint tools (also enforced by flake checks)
+          python3Packages.black
+          python3Packages.flake8
+          python3Packages.isort
+          alejandra
+          deadnix
+          # Runtime dependency
+          postgresql.lib
+          # ESP32 dev stuff.
+          espflash
+          # Pico W dev stuff.
+          picotool
+          elf2uf2-rs
+          minicom
+        ];
+        shellHook = ''
+          export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [pkgs.openssl]}
+          echo -e "\nWelcome to the shell :)\n"
+        '';
+      };
 
     checks.${system} = let
       checkArgs = test-script: {
@@ -156,16 +164,82 @@
       # @NOTE: security-auth test needs no test-script (inline Python in .nix),
       #  but lib.nix requires one. Pass a no-op script.
       noopScript = pkgs.writeText "noop" "true";
+      # Pre-compiled deps for clippy (avoids rebuilding all dependencies each run)
+      serverLintDeps = lintCraneLib.buildDepsOnly {
+        src = ./.;
+        nativeBuildInputs = [pkgs.pkg-config];
+        buildInputs = [pkgs.openssl pkgs.postgresql.lib];
+      };
+      cliLintDeps = lintCraneLib.buildDepsOnly {
+        src = ./cli;
+        nativeBuildInputs = [pkgs.pkg-config];
+        buildInputs = [pkgs.openssl];
+      };
+      # Dummy env vars for client build checks (pure mode can't read host env)
+      dummyClientEnv = {
+        OUBOT_WIFI_SSID = "ci-check";
+        OUBOT_WIFI_PASS = "ci-check";
+        OUBOT_SERVER = "http://ci:8080";
+        OUBOT_TOKEN = "tk_cicheck12345678";
+      };
     in {
-      # @NOTE: Verifies every route handler has a rate-limiting guard.
-      #  See src/main.rs @WARNING and src/bauth.rs RateLimitGuard.
-      route-guard-lint =
-        pkgs.runCommand "route-guard-lint" {
-          src = ./src;
-          nativeBuildInputs = [pkgs.gnugrep pkgs.gnused];
+      # Formatting: cargo fmt (all crates) + alejandra + black + isort
+      fmt =
+        pkgs.runCommand "fmt" {
+          src = ./.;
+          nativeBuildInputs = with pkgs; [
+            fenixPkgs.default.toolchain
+            python3Packages.black
+            python3Packages.isort
+            alejandra
+          ];
         } ''
+          export HOME=$(mktemp -d)
+          cd $src && cargo fmt --check
+          cd $src/cli && cargo fmt --check
+          cd $src/clients/esp32 && cargo fmt --check
+          cd $src/clients/pico-w && cargo fmt --check
+          alejandra --check $src
+          black --line-length=131 --check $src/tests/
+          isort --check $src/tests/
+          mkdir -p $out && touch $out/ok
+        '';
+      # Linting: clippy (server + CLI, crane for dep caching)
+      clippy = lintCraneLib.cargoClippy {
+        src = ./.;
+        cargoArtifacts = serverLintDeps;
+        nativeBuildInputs = [pkgs.pkg-config];
+        buildInputs = [pkgs.openssl pkgs.postgresql.lib];
+        cargoClippyExtraArgs = "-- --deny warnings";
+      };
+      clippy-cli = lintCraneLib.cargoClippy {
+        src = ./cli;
+        cargoArtifacts = cliLintDeps;
+        nativeBuildInputs = [pkgs.pkg-config];
+        buildInputs = [pkgs.openssl];
+        cargoClippyExtraArgs = "-- --deny warnings";
+      };
+      # Linting: scripts + Nix + route-guard (shellcheck, flake8, deadnix)
+      lint =
+        pkgs.runCommand "lint" {
+          src = ./.;
+          nativeBuildInputs = with pkgs; [
+            shellcheck
+            python3Packages.flake8
+            deadnix
+            gnugrep
+            gnused
+            findutils
+          ];
+        } ''
+          shellcheck $src/tests/*.sh
+          flake8 --max-line-length=131 $src/tests/
+          deadnix --fail --no-lambda-pattern-names $src
+
+          # Route-guard lint: every handler must have a rate-limiting guard.
+          # See src/main.rs @WARNING and src/bauth.rs RateLimitGuard.
           FAIL=0
-          for file in $src/api.rs $src/main.rs $src/prom.rs; do
+          for file in $(find $src/src -name '*.rs'); do
             while IFS= read -r line_num; do
               sig=$(sed -n "$line_num,$((line_num+3))p" "$file")
               if ! echo "$sig" | grep -qE '(BAuth|AdminAuth|RateLimitGuard)'; then
@@ -179,9 +253,46 @@
             echo "Every route handler must include BAuth, AdminAuth, or RateLimitGuard."
             exit 1
           fi
-          echo "All route handlers have rate-limiting guards."
+
           mkdir -p $out && touch $out/ok
         '';
+      # Client build checks (cross-compilation with dummy env vars)
+      build-esp32 = let
+        commonArgs =
+          dummyClientEnv
+          // {
+            src = ./clients/esp32;
+            doCheck = false;
+            cargoExtraArgs = "--target riscv32imc-unknown-none-elf";
+            postUnpack = ''
+              sed -i '/^\[unstable\]$/d; /^build-std/d' $sourceRoot/.cargo/config.toml
+            '';
+          };
+      in
+        esp32CraneLib.buildPackage (commonArgs
+          // {
+            cargoArtifacts = esp32CraneLib.buildDepsOnly commonArgs;
+          });
+      build-pico-w = let
+        commonArgs =
+          dummyClientEnv
+          // {
+            src = ./clients/pico-w;
+            doCheck = false;
+            cargoExtraArgs = "--target thumbv6m-none-eabi";
+            postUnpack = ''
+              sed -i '/^\[unstable\]$/d; /^build-std/d' $sourceRoot/.cargo/config.toml
+            '';
+            CARGO_TARGET_THUMBV6M_NONE_EABI_RUSTFLAGS = "-C link-arg=-L${./clients/pico-w}";
+          };
+      in
+        picoWCraneLib.buildPackage (commonArgs
+          // {
+            cargoArtifacts = picoWCraneLib.buildDepsOnly (commonArgs
+              // {
+                buildPhaseCargoCommand = "cargo check --release --target thumbv6m-none-eabi";
+              });
+          });
       api-v1-up-test-success = import ./tests/api-v1-up-test-success.nix (checkArgs ./tests/api-v1-up-test-success.py);
       api-v1-up-duration-message = import ./tests/api-v1-up-duration-message.nix (checkArgs ./tests/api-v1-up-duration-message.py);
       cli-lifecycle = import ./tests/cli-lifecycle.nix (checkArgsWithCliBash ./tests/cli-lifecycle.sh);
