@@ -82,7 +82,7 @@
     response = client.succeed(
         "curl -s -X POST http://server:${c.oubot-port}/api/v1/users "
         "-H 'Content-Type: application/json' "
-        "-d '{\"user_type\": \"Admin\", \"invites_limit\": 5, \"up_delay\": 5, \"ntfy_enabled\": true, \"language_code\": \"en\"}'"
+        "-d '{\"user_type\": \"Admin\", \"invites_limit\": 5, \"up_delay\": 10, \"ntfy_enabled\": true, \"language_code\": \"en\"}'"
     )
     data = json.loads(response)
     print(f"Create user response: {data}")

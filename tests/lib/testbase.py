@@ -27,7 +27,7 @@ class TestBase(ABC):
         data = {
             "user_type": "Admin",  # First user must be Admin when no invite provided
             "invites_limit": 5,
-            "up_delay": 5,  # Set minimal allowed delay to test faster.
+            "up_delay": 10,  # Set minimal allowed delay to test faster.
             "ntfy_enabled": True,
             "language_code": "uk",  # Tests expect Ukrainian notifications
         }

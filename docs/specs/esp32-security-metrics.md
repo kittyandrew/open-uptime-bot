@@ -6,7 +6,7 @@ Spec for three phases of work: server-side security + observability, ESP32 Rust 
 
 ### Current State
 - Server: Rust/Rocket, PostgreSQL, ntfy.sh notifications, Docker deployment on NixOS (tustan)
-- Clients: ESP32-C3 and Pico W, both Rust no_std firmware, GET every ~5s with persistent TLS connections
+- Clients: ESP32-C3 and Pico W, both Rust no_std firmware, GET every ~7s with persistent TLS connections
 - Auth: Bearer token (`Authorization: token tk_...`), IP-based rate limit (5 req/sec via governor fairing), auth failure logging for fail2ban
 - Monitoring: Prometheus metrics (`oubot_` prefix) — request-level (total, per-endpoint, latency) + domain-level (uptime state, last seen, auth failures, notifications, active users)
 - Testing: 7 NixOS integration tests (Python + bash) + route-guard-lint, including security-auth (fail2ban) and docker-e2e
@@ -190,7 +190,7 @@ Token/WiFi changes require rebuilding + re-flashing. This is acceptable for the 
 #### Client behavior
 1. Connect to WiFi (retry with backoff on failure)
 2. Establish persistent HTTPS connection to server (TLS encrypted, no cert verification — `TlsVerify::None`; blocked on embedded-tls adding no_std certificate chain support)
-3. Send `GET /api/v1/up` with `Authorization: token <TOKEN>` every ~5 seconds
+3. Send `GET /api/v1/up` with `Authorization: token <TOKEN>` every ~7 seconds
 4. On connection drop: reconnect (WiFi first, then HTTPS)
 5. LED feedback: blink on ping, solid on error, off during sleep
 

@@ -117,7 +117,7 @@ See [usage/esp32-c3.md](usage/esp32-c3.md) for the full ESP32-C3 setup guide (bu
 
 See [usage/pico-w.md](usage/pico-w.md) for the full Pico W setup guide (build, flash, verify).
 
-Both clients use compile-time configuration via environment variables and `nix build --impure`. The device connects to WiFi and pings `GET /api/v1/up` every ~5 seconds. If pings stop for longer than the user's `up_delay` (default 30s), the server sends a "power off" notification via ntfy.sh. When pings resume, it sends a "power on" notification with the duration of the outage.
+Both clients use compile-time configuration via environment variables and `nix build --impure`. The device connects to WiFi and pings `GET /api/v1/up` every ~7 seconds. If pings stop for longer than the user's `up_delay` (default 60s), the server sends a "power off" notification via ntfy.sh. When pings resume, it sends a "power on" notification with the duration of the outage.
 
 ## 8. Subscribe to notifications on your phone
 

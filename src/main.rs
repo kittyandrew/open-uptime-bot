@@ -97,11 +97,13 @@ async fn dispatch_notifications(item: db::UserState, context: context::Context, 
         _ => String::new(),
     };
 
+    // @NOTE: Paused devices never trigger notifications (silent freeze/thaw).
+    //  Pause/unpause is intentionally silent — the user initiated it.
     let title = match item.uptime.status {
         db::UpStatus::Uninitialized => LOCALES.lookup(&lang, "notification-device-connected"),
         db::UpStatus::Up => LOCALES.lookup(&lang, "notification-power-on"),
         db::UpStatus::Down => LOCALES.lookup(&lang, "notification-power-off"),
-        db::UpStatus::Paused => LOCALES.lookup(&lang, "notification-maintenance"),
+        db::UpStatus::Paused => return,
     };
 
     if item.ntfy.enabled {
@@ -110,10 +112,9 @@ async fn dispatch_notifications(item: db::UserState, context: context::Context, 
             title,
             message: duration_message,
             status: match item.uptime.status {
-                db::UpStatus::Uninitialized => "white_check_mark".to_string(),
-                db::UpStatus::Up => "white_check_mark".to_string(),
+                db::UpStatus::Uninitialized | db::UpStatus::Up => "white_check_mark".to_string(),
                 db::UpStatus::Down => "warning".to_string(),
-                db::UpStatus::Paused => "warning".to_string(),
+                db::UpStatus::Paused => unreachable!(),
             },
             priority: "high".to_string(), // Configurable for user.
         };
@@ -122,7 +123,7 @@ async fn dispatch_notifications(item: db::UserState, context: context::Context, 
             db::UpStatus::Uninitialized => "connected",
             db::UpStatus::Up => "up",
             db::UpStatus::Down => "down",
-            db::UpStatus::Paused => "paused",
+            db::UpStatus::Paused => unreachable!(),
         };
         let ntfy_type = ntfy_type.to_string();
         tokio::spawn(async move {
@@ -138,6 +139,11 @@ async fn dispatch_notifications(item: db::UserState, context: context::Context, 
     }
 }
 
+/// Current UTC time-of-day in minutes (0-1439), for maintenance window checks.
+fn utc_minute_of_day(epoch_secs: u64) -> i32 {
+    ((epoch_secs % 86400) / 60) as i32
+}
+
 async fn background_handle_down(context: context::Context, db_pool: PgPool) {
     loop {
         let mut sleep_for = Duration::new(5, 0);
@@ -147,10 +153,17 @@ async fn background_handle_down(context: context::Context, db_pool: PgPool) {
             //  states, preventing TOCTOU race with api_up's touch().
             let mut guard = context.users.write().await;
             let now = SystemTime::now();
+            let now_utc_minutes = utc_minute_of_day(
+                now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+            );
             for (_, item) in guard.iter_mut() {
                 let query_at = item.uptime.touched_at + Duration::new(item.user.up_delay as u64, 0);
                 if let Ok(remaining) = query_at.duration_since(now) {
                     sleep_for = sleep_for.min(remaining);
+                } else if item.uptime.status == db::UpStatus::Paused {
+                    // Paused: skip entirely — no down transition while frozen
+                } else if item.user.is_in_maintenance_window(now_utc_minutes) {
+                    // Maintenance window: suppress down transition
                 } else if let Some(duration) = item.uptime.go_down() {
                     prom::UPTIME_STATE.with_label_values(&[&item.user.id.to_string()]).set(i64::from(&item.uptime.status));
                     states_to_persist.push(item.uptime.clone());
@@ -200,8 +213,10 @@ async fn api_up(bauth: bauth::BAuth, mut conn: Connection<DB>, context: &State<c
             .as_secs_f64();
         prom::LAST_SEEN_TIMESTAMP.with_label_values(&[&uid_str]).set(now_ts);
 
+        let in_maint = item.user.is_in_maintenance_window(utc_minute_of_day(now_ts as u64));
+
         match item.uptime.touch() {
-            db::TouchResult::Connected => {
+            db::TouchResult::Connected if !in_maint => {
                 // Clone with Uninitialized status so dispatch uses "device connected" title
                 let mut notification_state = item.clone();
                 notification_state.uptime.status = db::UpStatus::Uninitialized;
@@ -211,14 +226,14 @@ async fn api_up(bauth: bauth::BAuth, mut conn: Connection<DB>, context: &State<c
                     None,
                 ));
             }
-            db::TouchResult::Restored(duration) => {
+            db::TouchResult::Restored(duration) if !in_maint => {
                 tokio::spawn(dispatch_notifications(
                     item.clone(),
                     context.inner().clone(),
                     Some(duration),
                 ));
             }
-            db::TouchResult::NoChange => {}
+            _ => {} // NoChange, or suppressed by maintenance window
         }
         // Update uptime state metric
         prom::UPTIME_STATE.with_label_values(&[&uid_str]).set(i64::from(&item.uptime.status));
@@ -273,6 +288,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 api::update_ntfy_settings,
                 api::get_language,
                 api::update_language,
+                api::pause_monitoring,
+                api::unpause_monitoring,
+                api::get_settings,
+                api::update_settings,
                 api::admin_list_users,
                 api::admin_get_user,
                 api::delete_user,

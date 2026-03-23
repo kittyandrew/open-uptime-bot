@@ -61,6 +61,8 @@ pub struct User {
     pub up_delay: i16,
     pub ntfy_id: ID,
     pub language_code: String,
+    pub maint_window_start_utc: Option<i16>,
+    pub maint_window_end_utc: Option<i16>,
 }
 
 impl User {
@@ -80,9 +82,27 @@ impl User {
             invites_limit,
             invites_used: 0,
             access_token: format!("tk_{secret_part}"),
-            up_delay: up_delay.unwrap_or(30) as i16,
+            up_delay: up_delay.unwrap_or(60) as i16,
             ntfy_id: ntfy.id,
             language_code,
+            maint_window_start_utc: None,
+            maint_window_end_utc: None,
+        }
+    }
+
+    /// Check if the current UTC time-of-day falls within the maintenance window.
+    /// Handles midnight-spanning windows (e.g., 23:50-00:10).
+    pub fn is_in_maintenance_window(&self, now_utc_minutes: i32) -> bool {
+        match (self.maint_window_start_utc, self.maint_window_end_utc) {
+            (Some(start), Some(end)) => {
+                let (s, e, n) = (start as i32, end as i32, now_utc_minutes);
+                if s < e {
+                    n >= s && n < e
+                } else {
+                    n >= s || n < e
+                }
+            }
+            _ => false,
         }
     }
 }
@@ -129,6 +149,7 @@ pub struct UptimeState {
     pub status: UpStatus,
     pub user_id: Option<ID>,
     pub state_changed_at: SystemTime,
+    pub pre_pause_status: Option<UpStatus>,
 }
 
 /// Result of a touch() call indicating what state transition occurred.
@@ -151,6 +172,7 @@ impl UptimeState {
             status: UpStatus::Uninitialized,
             user_id: Some(user_id),
             state_changed_at: now,
+            pre_pause_status: None,
         }
     }
 
@@ -187,6 +209,32 @@ impl UptimeState {
             return duration;
         }
         return None;
+    }
+
+    /// Pause monitoring. Only allowed from Up or Down.
+    pub fn pause(&mut self) -> Result<(), &'static str> {
+        match self.status {
+            UpStatus::Up | UpStatus::Down => {
+                self.pre_pause_status = Some(self.status);
+                self.status = UpStatus::Paused;
+                Ok(())
+            }
+            UpStatus::Paused => Err("Already paused"),
+            UpStatus::Uninitialized => Err("Device not yet connected"),
+        }
+    }
+
+    /// Resume monitoring. Restores pre-pause status, refreshes touched_at.
+    pub fn unpause(&mut self) -> Result<(), &'static str> {
+        if self.status != UpStatus::Paused {
+            return Err("Not paused");
+        }
+        let now = SystemTime::now();
+        self.status = self.pre_pause_status.unwrap_or(UpStatus::Up);
+        self.pre_pause_status = None;
+        self.touched_at = now;
+        self.state_changed_at = now;
+        Ok(())
     }
 }
 
@@ -462,9 +510,53 @@ pub async fn update_uptime_state(
             uptime_states::dsl::touched_at.eq(state.touched_at),
             uptime_states::dsl::status.eq(state.status),
             uptime_states::dsl::state_changed_at.eq(state.state_changed_at),
+            uptime_states::dsl::pre_pause_status.eq(state.pre_pause_status),
         ))
         .execute(conn)
         .await?;
+    Ok(())
+}
+
+pub async fn update_user_settings(
+    conn: &mut AsyncPgConnection,
+    user_id: ID,
+    up_delay: Option<i16>,
+    maint_start: Option<Option<i16>>,
+    maint_end: Option<Option<i16>>,
+) -> Result<(), diesel::result::Error> {
+    let maint = match (maint_start, maint_end) {
+        (Some(s), Some(e)) => Some((s, e)),
+        _ => None,
+    };
+    let target = users::dsl::users.filter(users::dsl::id.eq(user_id));
+    match (up_delay, maint) {
+        (Some(d), Some((s, e))) => {
+            diesel::update(target)
+                .set((
+                    users::dsl::up_delay.eq(d),
+                    users::dsl::maint_window_start_utc.eq(s),
+                    users::dsl::maint_window_end_utc.eq(e),
+                ))
+                .execute(conn)
+                .await?;
+        }
+        (Some(d), None) => {
+            diesel::update(target)
+                .set(users::dsl::up_delay.eq(d))
+                .execute(conn)
+                .await?;
+        }
+        (None, Some((s, e))) => {
+            diesel::update(target)
+                .set((
+                    users::dsl::maint_window_start_utc.eq(s),
+                    users::dsl::maint_window_end_utc.eq(e),
+                ))
+                .execute(conn)
+                .await?;
+        }
+        (None, None) => {}
+    }
     Ok(())
 }
 

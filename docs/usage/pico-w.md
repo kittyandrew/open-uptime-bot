@@ -102,13 +102,13 @@ The uptime state should show as "up". You can also check the Prometheus metrics 
 curl $OUBOT_SERVER/api/v1/metrics | grep oubot_uptime
 ```
 
-Unplug the device for 30+ seconds and you'll receive a "down" notification via ntfy.
+Unplug the device for 60+ seconds and you'll receive a "down" notification via ntfy.
 
 ## 5. LED Behavior
 
 | Pattern | Meaning |
 |---------|---------|
-| Brief blink every ~5s | Heartbeat sent successfully |
+| Brief blink every ~7s | Heartbeat sent successfully |
 | Solid on | Error state or halted (bad token / connection failure) |
 | Off | Idle / sleeping between heartbeats |
 

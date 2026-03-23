@@ -27,8 +27,9 @@ const PASSWORD: &str = env!("OUBOT_WIFI_PASS");
 const SERVER: &str = env!("OUBOT_SERVER");
 const TOKEN: &str = env!("OUBOT_TOKEN");
 
-const HEARTBEAT_SECS: u64 = 5;
-const MAX_BACKOFF_SECS: u64 = 60;
+const HEARTBEAT_SECS: u64 = 7;
+const BACKOFF_BASE_SECS: u64 = 2;
+const MAX_BACKOFF_SECS: u64 = 12;
 const MAX_AUTH_FAILURES: u32 = 5;
 
 bind_interrupts!(struct Irqs {
@@ -46,11 +47,11 @@ fn auth_header() -> heapless::String<64> {
 }
 
 fn backoff_secs(failures: u32) -> u64 {
-    (HEARTBEAT_SECS * 2u64.pow(failures.min(4))).min(MAX_BACKOFF_SECS)
+    (BACKOFF_BASE_SECS * 2u64.pow(failures.saturating_sub(1).min(3))).min(MAX_BACKOFF_SECS)
 }
 
-/// LED on = cyw43 GPIO0 high; LED off = GPIO0 low.
-/// Unlike the ESP32 (active-low GPIO8), the Pico W LED is active-high
+/// LED contract: OFF = normal/idle, brief ON blink = success, solid ON = error/reconnect.
+/// LED on = cyw43 GPIO0 high; LED off = GPIO0 low. The Pico W LED is active-high
 /// but controlled through the WiFi chip, not a regular RP2040 GPIO.
 async fn success_blink(control: &mut cyw43::Control<'_>) {
     control.gpio_set(0, true).await;
@@ -58,10 +59,9 @@ async fn success_blink(control: &mut cyw43::Control<'_>) {
     control.gpio_set(0, false).await;
 }
 
-async fn error_blink(control: &mut cyw43::Control<'_>, failures: u32) {
-    control.gpio_set(0, true).await;
+/// Wait for backoff duration. LED is expected to already be ON from caller.
+async fn error_wait(failures: u32) {
     Timer::after(Duration::from_secs(backoff_secs(failures))).await;
-    control.gpio_set(0, false).await;
 }
 
 async fn halt(control: &mut cyw43::Control<'_>) -> ! {
@@ -162,8 +162,10 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    // Connect WiFi + wait for IP.
+    // Connect WiFi + wait for IP. LED ON during connect (error = loud).
+    control.gpio_set(0, true).await;
     wifi_connect(&mut control, stack).await;
+    control.gpio_set(0, false).await;
 
     let auth = auth_header();
     let headers = [("Authorization", auth.as_str())];
@@ -179,7 +181,9 @@ async fn main(spawner: Spawner) {
         // to Down, but does NOT auto-reconnect. Re-join if link dropped.
         if !stack.is_link_up() {
             warn!("WiFi link down, reconnecting...");
+            control.gpio_set(0, true).await; // LED ON during reconnect
             wifi_connect(&mut control, stack).await;
+            control.gpio_set(0, false).await;
         }
         let mut tls_rx = [0; 4096];
         let mut tls_tx = [0; 4096];
@@ -198,13 +202,15 @@ async fn main(spawner: Spawner) {
         let mut resource = match resource {
             Ok(r) => {
                 info!("Connection established");
+                control.gpio_set(0, false).await; // LED OFF — connected
                 r
             }
             Err(e) => {
                 error!("Connect failed: {:?}", e);
                 failures += 1;
-                error_blink(&mut control, failures).await;
-                continue;
+                control.gpio_set(0, true).await;
+                error_wait(failures).await;
+                continue; // LED stays ON through next iteration
             }
         };
 
@@ -245,15 +251,17 @@ async fn main(spawner: Spawner) {
                         auth_failures = 0;
                     }
                     failures += 1;
-                    error_blink(&mut control, failures).await;
+                    control.gpio_set(0, true).await;
+                    error_wait(failures).await;
                     // Non-200 doesn't necessarily mean connection is dead, keep trying.
                 }
                 Err(e) => {
                     error!("up: request failed: {:?}", e);
                     failures += 1;
                     auth_failures = 0; // Reset — consecutive 401 streak broken by network error.
-                    error_blink(&mut control, failures).await;
-                    break; // Reconnect
+                    control.gpio_set(0, true).await;
+                    error_wait(failures).await;
+                    break; // Reconnect — LED stays ON through outer loop
                 }
             }
         }

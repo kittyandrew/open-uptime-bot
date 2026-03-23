@@ -56,8 +56,8 @@ In-memory HashMap cache backed by PostgreSQL. On startup, loads all users/states
 
 ### Database Tables
 
-- **users** - Accounts with access_token, up_delay, language_code, ntfy_id
-- **uptime_states** - Device status (uninitialized/up/down/paused), touched_at, state_changed_at
+- **users** - Accounts with access_token, up_delay, language_code, ntfy_id, maint_window_start/end_utc
+- **uptime_states** - Device status (uninitialized/up/down/paused), touched_at, state_changed_at, pre_pause_status
 - **ntfy_users** - Ntfy.sh credentials per user
 - **invites** - Invitation tokens for user registration (is_used tracks consumption)
 
@@ -74,6 +74,9 @@ In-memory HashMap cache backed by PostgreSQL. On startup, loads all users/states
 - `POST /api/v1/me/regenerate-token` - Regenerate access token (BAuth)
 - `GET|PATCH /api/v1/me/ntfy` - Ntfy settings (BAuth)
 - `GET|PATCH /api/v1/me/language` - Language setting (BAuth)
+- `POST /api/v1/me/pause` - Pause monitoring (BAuth)
+- `POST /api/v1/me/unpause` - Resume monitoring (BAuth)
+- `GET|PATCH /api/v1/me/settings` - Up delay + maintenance window (BAuth)
 - `GET /api/v1/admin/users` - List all users (AdminAuth)
 - `GET /api/v1/admin/users/<id>` - Get user (AdminAuth)
 - `DELETE /api/v1/admin/users/<id>` - Delete user (AdminAuth)
@@ -84,6 +87,14 @@ In-memory HashMap cache backed by PostgreSQL. On startup, loads all users/states
 2. Server updates uptime state in memory and DB
 3. If state changed (Down->Up or Up->Down after timeout), sends notification via Ntfy.sh
 4. Duration messages are localized (Ukrainian/English) based on user's language_code
+
+### Pause (Freeze/Thaw)
+
+Pause freezes the uptime state — no state changes, no notifications while paused. Allowed from Up or Down. Saves `pre_pause_status` so unpause restores the exact state. Unpause refreshes `touched_at` and `state_changed_at` to now (fresh countdown). Pause/unpause persist to DB inside the write lock to prevent the race where `background_handle_down`'s deferred write could overwrite Paused with Down.
+
+### Maintenance Window
+
+Per-user daily UTC time range (minutes from midnight, stored on users table). During the window, `background_handle_down` skips the Down transition and `api_up` suppresses Connected/Restored notifications. Handles midnight-spanning windows (start > end means `now >= start || now < end`). No state changes occur — the device stays Up, and after the window ends the normal `touched_at + up_delay` check resumes naturally.
 
 ## Testing
 
@@ -121,7 +132,7 @@ Server config in `Rocket.toml` (port 8080, `ip_header = "X-Forwarded-For"` for r
 
 ## CLI Tool
 
-`oubot-cli` -- management CLI, available in the devShell (`nix develop -c oubot-cli ...`) or via `nix build .#cli`. Subcommands: `init`, `me`, `token`, `ntfy`, `language`, `admin`. Uses env vars `OUBOT_SERVER` and `OUBOT_TOKEN`.
+`oubot-cli` -- management CLI, available in the devShell (`nix develop -c oubot-cli ...`) or via `nix build .#cli`. Subcommands: `init`, `me`, `token`, `ntfy`, `language`, `pause`, `unpause`, `settings`, `admin`. Uses env vars `OUBOT_SERVER` and `OUBOT_TOKEN`.
 
 ## Key Dependencies
 
@@ -132,7 +143,7 @@ Server config in `Rocket.toml` (port 8080, `ip_header = "X-Forwarded-For"` for r
 
 ## ESP32-C3 Client
 
-`clients/esp32/` — Rust no_std firmware (esp-hal 1.0.0 + esp-rtos + reqwless). Sends `GET /api/v1/up` heartbeats every 5s with bearer auth. WiFi reconnect, exponential backoff, LED feedback. Board: ESP32-C3 (RISC-V), GPIO8 LED (active-low).
+`clients/esp32/` — Rust no_std firmware (esp-hal 1.0.0 + esp-rtos + reqwless). Sends `GET /api/v1/up` heartbeats every 7s with bearer auth. WiFi reconnect, exponential backoff, LED feedback. Board: ESP32-C3 (RISC-V), GPIO8 LED (active-low).
 
 Build/flash: see `docs/usage/esp32-c3.md`. Nix build: `nix build .#esp32-client --impure` (requires all 4 `OUBOT_*` env vars). DevShell uses `build-std` (nightly); Nix build uses fenix pre-built `rust-std` instead.
 

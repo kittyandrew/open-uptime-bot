@@ -17,7 +17,7 @@
   # compile without linking, then build the real binary with full source.
   commonArgs = envVars // {
     pname = "pico-w-uptime-client";
-    version = "2026.3.21";
+    version = "2026.3.23";
     src = ./.;
     doCheck = false; # Can't run no_std binary on build host.
     cargoExtraArgs = "--target thumbv6m-none-eabi";

@@ -53,9 +53,37 @@ enum Commands {
         code: String,
     },
 
+    /// Pause monitoring (freeze state, suppress notifications)
+    Pause,
+
+    /// Resume monitoring (restore pre-pause state)
+    Unpause,
+
+    /// Manage monitoring settings (up_delay, maintenance window)
+    #[command(subcommand)]
+    Settings(SettingsCommands),
+
     /// Admin commands (requires admin privileges)
     #[command(subcommand)]
     Admin(AdminCommands),
+}
+
+#[derive(Subcommand)]
+enum SettingsCommands {
+    /// Show current settings
+    Show,
+    /// Set heartbeat timeout (seconds before device is considered down)
+    Delay {
+        /// Timeout in seconds (minimum 10)
+        seconds: i16,
+    },
+    /// Set or clear daily maintenance window (times in HH:MM UTC)
+    Maintenance {
+        /// Start time in HH:MM UTC (omit both times to clear)
+        start: Option<String>,
+        /// End time in HH:MM UTC
+        end: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -282,6 +310,12 @@ fn format_me(json: &Value) {
         println!("Language:     {}", fmt::get_str(user, "language_code"));
         println!("Created:      {}", fmt::format_timestamp(fmt::get_str(user, "created_at")));
         println!("Up delay:     {}s", fmt::get_i64(user, "up_delay"));
+        let mw_start = user.get("maint_window_start_utc").and_then(|v| v.as_i64());
+        let mw_end = user.get("maint_window_end_utc").and_then(|v| v.as_i64());
+        match (mw_start, mw_end) {
+            (Some(s), Some(e)) => println!("Maintenance:  {:02}:{:02}-{:02}:{:02} UTC", s / 60, s % 60, e / 60, e % 60),
+            _ => println!("Maintenance:  [not set]"),
+        }
         println!("Invites:      {}/{}", fmt::get_i64(user, "invites_used"), fmt::get_i64(user, "invites_limit"));
 
         if let Some(ntfy) = ntfy {
@@ -355,6 +389,21 @@ fn format_ntfy(json: &Value) {
         println!("Password:     {}", fmt::get_str(ntfy, "password"));
     } else {
         print_json(json);
+    }
+}
+
+fn format_settings_update(json: &Value) {
+    println!("Settings updated:");
+    if let Some(v) = json.get("up_delay").and_then(|v| v.as_i64()) {
+        println!("  up_delay:     {}s", v);
+    }
+    let start = json.get("maint_window_start_utc");
+    let end = json.get("maint_window_end_utc");
+    if start.is_some() || end.is_some() {
+        match (start.and_then(|v| v.as_i64()), end.and_then(|v| v.as_i64())) {
+            (Some(s), Some(e)) => println!("  maintenance:  {:02}:{:02}-{:02}:{:02} UTC", s / 60, s % 60, e / 60, e % 60),
+            _ => println!("  maintenance:  [cleared]"),
+        }
     }
 }
 
@@ -471,6 +520,95 @@ fn main() {
                     print_json(json);
                 }
             });
+        }
+
+        Commands::Pause => {
+            require_token(&cli.token);
+            handle_response_with(client.post_empty("/api/v1/me/pause"), cli.raw, |json| {
+                if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
+                    println!("{}", msg);
+                } else {
+                    print_json(json);
+                }
+            });
+        }
+
+        Commands::Unpause => {
+            require_token(&cli.token);
+            handle_response_with(client.post_empty("/api/v1/me/unpause"), cli.raw, |json| {
+                if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
+                    println!("{}", msg);
+                } else {
+                    print_json(json);
+                }
+            });
+        }
+
+        Commands::Settings(cmd) => {
+            require_token(&cli.token);
+            match cmd {
+                SettingsCommands::Show => {
+                    handle_response_with(client.get("/api/v1/me/settings"), cli.raw, |json| {
+                        println!("Settings");
+                        println!("========");
+                        println!("Up delay:     {}s", fmt::get_i64(json, "up_delay"));
+                        let start = json.get("maint_window_start_utc").and_then(|v| v.as_i64());
+                        let end = json.get("maint_window_end_utc").and_then(|v| v.as_i64());
+                        match (start, end) {
+                            (Some(s), Some(e)) => {
+                                println!("Maintenance:  {:02}:{:02}-{:02}:{:02} UTC",
+                                    s / 60, s % 60, e / 60, e % 60);
+                            }
+                            _ => println!("Maintenance:  [not set]"),
+                        }
+                    });
+                }
+                SettingsCommands::Delay { seconds } => {
+                    let body = serde_json::json!({"up_delay": seconds});
+                    handle_response_with(client.patch("/api/v1/me/settings", &body), cli.raw, format_settings_update);
+                }
+                SettingsCommands::Maintenance { start, end } => {
+                    let body = match (start, end) {
+                        (Some(s), Some(e)) => {
+                            let parse_time = |t: &str| -> Result<i16, String> {
+                                let parts: Vec<&str> = t.split(':').collect();
+                                if parts.len() != 2 {
+                                    return Err(format!("Invalid time format '{}', expected HH:MM", t));
+                                }
+                                let h: i16 = parts[0].parse().map_err(|_| format!("Invalid hour in '{}'", t))?;
+                                let m: i16 = parts[1].parse().map_err(|_| format!("Invalid minute in '{}'", t))?;
+                                if h < 0 || h > 23 || m < 0 || m > 59 {
+                                    return Err(format!("Time '{}' out of range (00:00-23:59)", t));
+                                }
+                                Ok(h * 60 + m)
+                            };
+                            let start_min = match parse_time(&s) {
+                                Ok(v) => v,
+                                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                            };
+                            let end_min = match parse_time(&e) {
+                                Ok(v) => v,
+                                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                            };
+                            serde_json::json!({
+                                "maint_window_start_utc": start_min,
+                                "maint_window_end_utc": end_min
+                            })
+                        }
+                        (None, None) => {
+                            serde_json::json!({
+                                "maint_window_start_utc": null,
+                                "maint_window_end_utc": null
+                            })
+                        }
+                        _ => {
+                            eprintln!("Error: Provide both start and end times, or neither to clear");
+                            std::process::exit(1);
+                        }
+                    };
+                    handle_response_with(client.patch("/api/v1/me/settings", &body), cli.raw, format_settings_update);
+                }
+            }
         }
 
         Commands::Admin(cmd) => {

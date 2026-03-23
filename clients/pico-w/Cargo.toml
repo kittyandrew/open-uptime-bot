@@ -1,6 +1,6 @@
 [package]
 name = "pico-w-uptime-client"
-version = "2026.3.21"
+version = "2026.3.23"
 edition = "2024"
 
 [dependencies]

@@ -1,6 +1,6 @@
 [package]
 name = "open-uptime-bot"
-version = "2026.3.21"
+version = "2026.3.23"
 edition = "2024"
 
 # I have no clue what any of this does:

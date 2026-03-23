@@ -75,7 +75,7 @@
     response = primary.succeed(
         "curl -sf -X POST http://localhost:${c.oubot-port}/api/v1/users "
         "-H 'Content-Type: application/json' "
-        "-d '{\"user_type\": \"Admin\", \"invites_limit\": 5, \"up_delay\": 5, \"ntfy_enabled\": true, \"language_code\": \"en\"}'"
+        "-d '{\"user_type\": \"Admin\", \"invites_limit\": 5, \"up_delay\": 10, \"ntfy_enabled\": true, \"language_code\": \"en\"}'"
     )
     data = json.loads(response)
     assert data["status"] == 200, f"Expected status 200, got: {response}"

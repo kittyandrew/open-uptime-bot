@@ -38,7 +38,7 @@ class ApiV1UpDurationMessage(TestBase):
         assert message["title"] == "Девайс під'єднано!"
         self.log("Device connected notification received.")
 
-        # Wait for the Down notification (after up_delay timeout of 5 seconds).
+        # Wait for the Down notification (after up_delay timeout of 10 seconds).
         self.log("Waiting for Down notification...")
         message = await self.wait_for_message(ws)
         assert message["event"] == "message"

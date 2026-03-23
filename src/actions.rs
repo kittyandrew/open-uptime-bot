@@ -70,8 +70,8 @@ pub async fn create_user(opts: &NewUser, conn: &mut Conn, context: &Context) -> 
 
     // Validate up_delay if provided
     if let Some(up_delay) = opts.up_delay {
-        if up_delay < 5 || up_delay > 32767 {
-            return Err("up_delay must be between 5 and 32767 seconds".to_string());
+        if up_delay < 10 || up_delay > 32767 {
+            return Err("up_delay must be between 10 and 32767 seconds".to_string());
         }
     }
 

@@ -44,6 +44,7 @@ diesel::table! {
         status -> StatusEnum,
         user_id -> Nullable<Uuid>,
         state_changed_at -> Timestamp,
+        pre_pause_status -> Nullable<StatusEnum>,
     }
 }
 
@@ -61,6 +62,8 @@ diesel::table! {
         up_delay -> Int2,
         ntfy_id -> Uuid,
         language_code -> Text,
+        maint_window_start_utc -> Nullable<Int2>,
+        maint_window_end_utc -> Nullable<Int2>,
     }
 }
 

@@ -43,8 +43,9 @@ const PASSWORD: &str = env!("OUBOT_WIFI_PASS");
 const SERVER: &str = env!("OUBOT_SERVER");
 const TOKEN: &str = env!("OUBOT_TOKEN");
 
-const HEARTBEAT_SECS: u64 = 5;
-const MAX_BACKOFF_SECS: u64 = 60;
+const HEARTBEAT_SECS: u64 = 7;
+const BACKOFF_BASE_SECS: u64 = 2;
+const MAX_BACKOFF_SECS: u64 = 12;
 const MAX_AUTH_FAILURES: u32 = 5;
 
 macro_rules! mk_static {
@@ -63,13 +64,13 @@ fn auth_header() -> heapless::String<64> {
 }
 
 fn backoff_secs(failures: u32) -> u64 {
-    (HEARTBEAT_SECS * 2u64.pow(failures.min(4))).min(MAX_BACKOFF_SECS)
+    (BACKOFF_BASE_SECS * 2u64.pow(failures.saturating_sub(1).min(3))).min(MAX_BACKOFF_SECS)
 }
 
-async fn error_blink(led: &mut Output<'_>, failures: u32) {
-    led.set_low();
+/// Wait for backoff duration. LED is expected to already be ON (LOW) from caller.
+/// @NOTE: GPIO8 is active-low: LOW = on, HIGH = off.
+async fn error_wait(failures: u32) {
     Timer::after(Duration::from_secs(backoff_secs(failures))).await;
-    led.set_high();
 }
 
 async fn halt(led: &mut Output<'_>) -> ! {
@@ -126,7 +127,8 @@ async fn main(spawner: Spawner) -> ! {
         halt(&mut led).await;
     }
 
-    // Wait for WiFi + IP
+    // Wait for WiFi + IP. LED ON during connect (error = loud).
+    led.set_low(); // active-low: LOW = on
     loop {
         if stack.is_link_up() {
             break;
@@ -137,6 +139,7 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         if let Some(config) = stack.config_v4() {
             log::info!("Got IP: {}", config.address);
+            led.set_high(); // LED OFF — connected
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
@@ -174,13 +177,15 @@ async fn main(spawner: Spawner) -> ! {
         let mut resource = match resource {
             Ok(r) => {
                 log::info!("Connection established");
+                led.set_high(); // LED OFF — connected
                 r
             }
             Err(e) => {
                 log::error!("Connect failed: {:?}", e);
                 failures += 1;
-                error_blink(&mut led, failures).await;
-                continue; // Retry outer loop (new connection)
+                led.set_low(); // LED ON — error
+                error_wait(failures).await;
+                continue; // LED stays ON through next iteration
             }
         };
 
@@ -224,7 +229,8 @@ async fn main(spawner: Spawner) -> ! {
                         auth_failures = 0;
                     }
                     failures += 1;
-                    error_blink(&mut led, failures).await;
+                    led.set_low(); // LED ON — error
+                    error_wait(failures).await;
                     // Non-200 doesn't necessarily mean connection is dead, keep trying.
                 }
                 Err(e) => {
@@ -232,8 +238,9 @@ async fn main(spawner: Spawner) -> ! {
                     log::error!("up: request failed: {:?}", e);
                     failures += 1;
                     auth_failures = 0; // Reset — consecutive 401 streak broken by network error.
-                    error_blink(&mut led, failures).await;
-                    break; // Reconnect
+                    led.set_low(); // LED ON — error
+                    error_wait(failures).await;
+                    break; // Reconnect — LED stays ON through outer loop
                 }
             }
         }

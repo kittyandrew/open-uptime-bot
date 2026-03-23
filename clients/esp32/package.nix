@@ -13,7 +13,7 @@
 
   commonArgs = envVars // {
     pname = "esp32-uptime-client";
-    version = "2026.3.21";
+    version = "2026.3.23";
     src = ./.;
     doCheck = false; # Can't run no_std binary on build host.
     cargoExtraArgs = "--target riscv32imc-unknown-none-elf";

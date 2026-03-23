@@ -976,7 +976,7 @@ dependencies = [
 
 [[package]]
 name = "esp32-uptime-client"
-version = "2026.3.21"
+version = "2026.3.23"
 dependencies = [
  "embassy-executor",
  "embassy-net",

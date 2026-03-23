@@ -93,13 +93,13 @@ export OUBOT_TOKEN=tk_your_access_token
 nix develop -c oubot-cli me
 ```
 
-The uptime state should show as "up". Unplug the device for 30+ seconds and you'll receive a "down" notification via ntfy.
+The uptime state should show as "up". Unplug the device for 60+ seconds and you'll receive a "down" notification via ntfy.
 
 ## 5. LED Behavior
 
 | Pattern | Meaning |
 |---------|---------|
-| Brief blink every ~5s | Heartbeat sent successfully |
+| Brief blink every ~7s | Heartbeat sent successfully |
 | Solid on | Error state (bad status or connection failure), retrying with backoff |
 | Off | Idle / sleeping between heartbeats |
 
